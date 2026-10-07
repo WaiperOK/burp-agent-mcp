@@ -196,7 +196,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 ./run_tests.sh
 ```
 
-154 tests across ten suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+172 tests across eleven suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
@@ -207,6 +207,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 | `scanner.py` | scanner probes and candidate rules |
 | `intruder.py` | sequential intruder runner with ceilings |
 | `httpmsg.py` | HTTP request building and parsing, Burp history parsing |
+| `history_index.py` | incremental index of Proxy history, so searches by id do not rescan it |
 | `upstream.py` | persistent SSE connection to the Burp MCP Server |
 | `browser_guard.py` | Chromium through the proxy, with scope guards |
 | `redact.py` | secret and personal-data redaction |
@@ -223,6 +224,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 - Responses from targets reach the model, even after redaction. Do not use the gateway with real personal data without an agreement.
 - Port and scheme of history records are assumed to be HTTPS on 443 unless the Host header says otherwise. Anything outside the scope is skipped, not guessed.
 - Aggregates over Burp history are cached for 15 seconds. Use `fresh=true` to recompute.
+- The Proxy history index is reused for 5 seconds, so a search can miss traffic captured in the last 5 seconds. `search_proxy_history` with `fresh=true` asks Burp again. The index covers the first `max_history_records` records (default 500).
 
 ## License
 

@@ -37,6 +37,7 @@ import intruder as intruder_mod
 import scanner
 from audit import AuditLog
 from browser_guard import BrowserError, GuardedBrowser
+from history_index import Entry, HistoryIndex, fingerprint
 from httpmsg import MsgError
 from policy import Gate, Policy, PolicyError, RateLimitError
 from redact import redact_text, truncate
@@ -44,6 +45,7 @@ from upstream import UpstreamClient, UpstreamError
 
 UPSTREAM_TIMEOUT = 60
 HISTORY_PAGE = 10  # upstream truncates output to about 10 KB, so pages are small
+INDEX_MAX_AGE_S = 5.0  # searches within this many seconds reuse the history index without asking Burp
 MAX_BODY_SCAN = 2_000_000  # bytes of a body that search_bundles scans
 ITEM_CACHE_SIZE = 512  # history records are immutable, cached by history_id
 REPORT_NAMES = ("ai_security_report.md", "report_input.json")
@@ -62,6 +64,8 @@ AUDIT = AuditLog(POLICY.audit_log, POLICY.engagement_id)
 UPSTREAM = UpstreamClient(POLICY.upstream_sse_url, call_timeout=UPSTREAM_TIMEOUT)
 BROWSER = GuardedBrowser(POLICY)
 _ITEM_CACHE: OrderedDict[int, dict] = OrderedDict()
+HISTORY = HistoryIndex(max_records=POLICY.max_history_records, page=HISTORY_PAGE,
+                       on_reset=_ITEM_CACHE.clear)  # see history_index.py
 mcp = FastMCP("burp-agent")
 
 # The policy version in use: its hash is in the audit log, so a file edit is visible.
@@ -147,19 +151,9 @@ def _check_path(path: str) -> None:
         raise PolicyError(f"path is not in allowed_paths: {path[:200]}")
 
 
-async def _history_items():
-    """Yields (history_id, item) for the last max_history_records records. history_id = offset in Burp."""
-    offset, seen = 0, 0
-    while seen < POLICY.max_history_records:
-        count = min(HISTORY_PAGE, POLICY.max_history_records - seen)
-        items = httpmsg.parse_history(
-            await _upstream("get_proxy_http_history", {"count": count, "offset": offset}))
-        if not items:
-            return
-        for i, item in enumerate(items):
-            yield offset + i, item
-        offset += len(items)
-        seen += len(items)
+async def _history_page(offset: int, count: int) -> list[dict]:
+    """One page of Proxy history. offset is the history_id of its first record."""
+    return httpmsg.parse_history(await _upstream("get_proxy_http_history", {"count": count, "offset": offset}))
 
 
 CACHE_TTL = 15.0  # seconds: aggregates over history change only when someone browses the target
@@ -195,7 +189,7 @@ async def _scoped_items():
     """History records for authorized hosts, filtered on the Burp side, without record numbers.
 
     One call instead of a full scan: the server-side filter returns only matches. There are no history_id values,
-    so tools that need an id for replay use _history_items instead.
+    so tools that need an id for replay use the history index (HISTORY) instead.
     """
     rx = _scope_regex()
     offset = 0
@@ -290,58 +284,56 @@ async def scope_status() -> dict:
 
 
 @mcp.tool()
-async def search_proxy_history(host: str | None = None, path_contains: str | None = None, limit: int = 20) -> dict:
+async def search_proxy_history(host: str | None = None, path_contains: str | None = None, limit: int = 20,
+                               fresh: bool = False) -> dict:
     """Searches Proxy history for authorized hosts only (read-only).
 
     host: exact host (optional). path_contains: path substring (optional).
     limit: 1..50. Returns history_id, method, host, path, status and sanitized request and response.
+    The first call indexes the history; later calls read only the records added since, and reuse the index for
+    5 seconds. fresh=true asks Burp right away. complete=false means the index is still being built: call again.
     """
-    args = {"host": host, "path_contains": path_contains, "limit": limit}
+    args = {"host": host, "path_contains": path_contains, "limit": limit, "fresh": fresh}
     limit = max(1, min(int(limit), 50))
     host_f = host.lower().strip() if host else None
     if host_f and not POLICY.host_in_scope(host_f):
         AUDIT.record("search_proxy_history", "deny", args, error="host not in scope")
         return {"error": f"host not in authorized scope: {host_f}"}
 
-    # Fast check in one call: if there are no matches, the slow scan by record numbers is not needed.
-    probe_key = f"probe:{host_f}"
-    has_matches = _cache_get(probe_key)
-    if has_matches is None:
-        try:
-            has_matches = bool(httpmsg.parse_history(await _upstream(
-                "get_proxy_http_history_regex", {"regex": _scope_regex(host_f), "count": 1, "offset": 0})))
-        except UpstreamError as ex:
-            AUDIT.record("search_proxy_history", "error", args, error=str(ex)[:300])
-            return {"error": str(ex)[:300]}
-        _cache_put(probe_key, has_matches)
-    if not has_matches:
-        AUDIT.record("search_proxy_history", "allow", args, summary={"scanned": 0, "returned": 0, "probe": "empty"})
-        return _envelope({"items": [], "scanned": 0})
-
-    matches, scanned = [], 0
     try:
-        async for history_id, item in _history_items():
-            scanned += 1
-            req = item.get("request", "") or ""
-            h = httpmsg.host_from_request(req)
-            if not h or not POLICY.host_in_scope(h) or (host_f and h != host_f):
-                continue
-            method, path = httpmsg.split_request(req)
-            if path_contains and path_contains not in path:
-                continue
-            req_txt, _ = truncate(redact_text(req), 4000)
-            resp_txt, _ = truncate(redact_text(item.get("response", "") or ""), 2000)
-            matches.append({"history_id": history_id, "host": h, "method": method, "path": path,
-                            "request": req_txt, "response": resp_txt,
-                            "response_truncated": bool(item.get("response_truncated"))})
-            if len(matches) >= limit:
-                break
+        await HISTORY.refresh(_history_page, max_age_s=0.0 if fresh else INDEX_MAX_AGE_S)
     except (MsgError, UpstreamError) as ex:
         AUDIT.record("search_proxy_history", "error", args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
 
-    AUDIT.record("search_proxy_history", "allow", args, summary={"scanned": scanned, "returned": len(matches)})
-    return _envelope({"items": matches, "scanned": scanned})
+    def wanted(e: Entry) -> bool:
+        if not e.host or not POLICY.host_in_scope(e.host) or (host_f and e.host != host_f):
+            return False
+        return not path_contains or path_contains in e.path
+
+    hits, scanned = HISTORY.find(wanted, limit)
+    matches = []
+    try:
+        for e in hits:
+            item = await _load_item(e.history_id)  # full record, from the item cache when possible
+            if fingerprint(item) != e.fingerprint:  # the history changed under the index: start over
+                _ITEM_CACHE.pop(e.history_id, None)
+                HISTORY.reset()
+                AUDIT.record("search_proxy_history", "error", args, error="history changed during search")
+                return {"error": "history changed during the search: run it again"}
+            req_txt, _ = truncate(redact_text(item.get("request", "") or ""), 4000)
+            resp_txt, _ = truncate(redact_text(item.get("response", "") or ""), 2000)
+            matches.append({"history_id": e.history_id, "host": e.host, "method": e.method, "path": e.path,
+                            "request": req_txt, "response": resp_txt,
+                            "response_truncated": bool(item.get("response_truncated"))})
+    except (PolicyError, MsgError, UpstreamError) as ex:
+        AUDIT.record("search_proxy_history", "error", args, error=str(ex)[:300])
+        return {"error": str(ex)[:300]}
+
+    summary = {"scanned": scanned, "returned": len(matches), "indexed": len(HISTORY.entries), "complete": HISTORY.complete}
+    AUDIT.record("search_proxy_history", "allow", args, summary=summary)
+    return _envelope({"items": matches, "scanned": scanned, "indexed": len(HISTORY.entries),
+                      "complete": HISTORY.complete})
 
 
 @mcp.tool()

@@ -54,6 +54,7 @@ os.environ["BURP_AGENT_POLICY"] = f"{TMP}/policy.json"
 
 import httpmsg  # noqa: E402
 import server  # noqa: E402
+from history_index import HistoryIndex  # noqa: E402
 from policy import Gate, PolicyError  # noqa: E402
 
 HOST = "ehealth.test.local"
@@ -539,6 +540,80 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(SENT, [])
         finally:
             server.POLICY = original
+
+
+class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._saved_index = server.HISTORY
+        self._saved_upstream = server._upstream
+        server.HISTORY = HistoryIndex(max_records=500, page=server.HISTORY_PAGE, on_reset=server._ITEM_CACHE.clear)
+        server._ITEM_CACHE.clear()
+        self.history_offsets = []  # offsets of every get_proxy_http_history call
+
+        async def counting(tool, arguments):
+            if tool == "get_proxy_http_history":
+                self.history_offsets.append(arguments["offset"])
+            return await fake_upstream(tool, arguments)
+
+        server._upstream = counting
+
+    def tearDown(self):
+        server._upstream = self._saved_upstream
+        server.HISTORY = self._saved_index
+        server._ITEM_CACHE.clear()
+
+    async def test_search_finds_in_scope_records_and_redacts_them(self):
+        out = await server.search_proxy_history(host=HOST, path_contains="/api/patients")
+        self.assertNotIn("error", out)
+        self.assertEqual([i["history_id"] for i in out["items"]], [0, 1])
+        self.assertTrue(out["complete"])
+        dumped = json.dumps(out)
+        self.assertNotIn("evil.example", dumped)  # out of scope, never returned
+        self.assertNotIn("secret123", dumped)  # the cookie is redacted
+        self.assertNotIn("a@example.test", dumped)  # the e-mail in the response is redacted
+
+    async def test_search_within_max_age_is_served_from_the_index(self):
+        await server.search_proxy_history(host=HOST)  # indexes everything and caches the matched records
+        self.history_offsets.clear()
+        out = await server.search_proxy_history(host=HOST, path_contains="/api/visits")
+        self.assertEqual([i["history_id"] for i in out["items"]], [4])
+        self.assertEqual(self.history_offsets, [])  # no call to Burp at all
+
+    async def test_fresh_search_reads_only_the_tail(self):
+        await server.search_proxy_history(host=HOST)
+        self.history_offsets.clear()
+        out = await server.search_proxy_history(host=HOST, path_contains="/api/visits", fresh=True)
+        self.assertEqual([i["history_id"] for i in out["items"]], [4])
+        # the tail record as a check, then an empty page; the matched record is already cached
+        self.assertEqual(self.history_offsets, [4, 5])
+
+    async def test_out_of_scope_host_is_refused(self):
+        out = await server.search_proxy_history(host="evil.example")
+        self.assertIn("not in authorized scope", out["error"])
+
+    async def test_cleared_and_refilled_history_is_not_served_from_cache(self):
+        await server.search_proxy_history(host=HOST)  # caches records 0, 1, 2 and 4
+        original = list(FAKE_HISTORY)
+        FAKE_HISTORY[:] = [  # Burp cleared the history and captured new traffic: ids are reused
+            {"request": req(HOST, "GET", "/api/patients/101"), "response": original[0]["response"]},
+            {"request": req(HOST, "GET", "/api/patients/999"), "response": original[1]["response"]},
+            {"request": req(HOST, "GET", "/static/app.js"), "response": original[2]["response"]},
+            {"request": req(HOST, "POST", "/api/visits"), "response": original[4]["response"]},
+        ]
+        try:  # fresh=true: within max age the index would still show the old history, by design
+            out = await server.search_proxy_history(host=HOST, path_contains="/api/patients", fresh=True)
+        finally:
+            FAKE_HISTORY[:] = original
+        self.assertNotIn("error", out)
+        self.assertEqual([i["path"] for i in out["items"]], ["/api/patients/101", "/api/patients/999"])
+
+    async def test_stale_cache_entry_is_detected(self):
+        await server.search_proxy_history(host=HOST)  # the index holds record 1, the cache holds it too
+        server._ITEM_CACHE[1] = {"request": req(HOST, "GET", "/api/other"), "response": ""}  # a wrong record
+        out = await server.search_proxy_history(host=HOST, path_contains="/api/patients")
+        self.assertIn("changed during the search", out["error"])
+        self.assertNotIn(1, server._ITEM_CACHE)  # the bad entry is dropped, so the next call loads it fresh
+        self.assertEqual(server.HISTORY.entries, [])  # and the index starts over
 
 
 if __name__ == "__main__":
