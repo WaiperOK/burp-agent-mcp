@@ -1055,19 +1055,29 @@ async def browser_reload(reason: str) -> dict:
 
 @mcp.tool()
 async def request_url(url: str, reason: str, method: str = "GET", headers: dict[str, str] | None = None,
-                      body: str | None = None) -> dict:
+                      body: str | None = None, dry_run: bool = False) -> dict:
     """ACTIVE: sends a request to a full URL (TRAFFIC TO THE TARGET: mode=active only, environment test/stage).
 
     The URL must match the policy's scope_urls. Host, port and scheme are taken from the URL. Methods come from allowed_methods.
     reason is required and is written to the audit log. Header names, not values, are written to the audit log.
+    dry_run=true only shows the exact request that would be sent, after the scope and method checks.
+    It sends nothing and uses no request budget, and works in read_only mode too.
     """
     args = {"url": url[:300], "method": method.upper(), "reason": reason[:300],
-            "headers": sorted((headers or {}).keys()), "body_len": len(body or "")}
+            "headers": sorted((headers or {}).keys()), "body_len": len(body or ""), "dry_run": dry_run}
     try:
         if not reason.strip():
             raise PolicyError("reason is required")
         raw, host, port, use_https = httpmsg.build_from_url(url, method, headers, body)
         m, path = httpmsg.split_request(raw)
+        if dry_run:
+            # Scope and method only: the mode and the budget are not needed to preview a request.
+            if not POLICY.host_in_scope(host) or m not in POLICY.allowed_methods:
+                raise PolicyError(f"not allowed by policy: {m} {host}")
+            _scope_check(host, port, use_https, path)
+            AUDIT.record("request_url", "allow", {**args, "host": host}, summary={"dry_run": True})
+            return _envelope({"dry_run": True, "host": host, "port": port, "use_https": use_https,
+                              "would_send": redact_text(raw)[:4000]})
         _static_check(host, m)
         _scope_check(host, port, use_https, path)
         _active_gate(host, m)
@@ -1159,8 +1169,10 @@ def _plan_summary(endpoints, probes) -> dict:
     for p in probes:
         per_check[p.check] = per_check.get(p.check, 0) + 1
     covered = len({p.endpoint.key for p in probes})
+    # The rate limit is the floor for the run time: N probes need at least N / rate minutes.
+    minutes = round(len(probes) / max(1, POLICY.max_requests_per_minute), 1)
     return {"endpoints_found": len(endpoints), "endpoints_in_run": covered, "probes": len(probes),
-            "per_check": per_check,
+            "per_check": per_check, "estimated_minutes_at_rate_limit": minutes,
             "sample_urls": sorted({e.origin + e.path.split("?", 1)[0] for e in endpoints})[:20]}
 
 
@@ -1212,7 +1224,7 @@ def _append_finding(job_id: str, finding: dict) -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-async def _scan_job(job_id: str, probes: list, min_delay_s: float) -> None:
+async def _scan_job(job_id: str, probes: list, min_delay_s: float, max_requests: int) -> None:
     """Runs one scan job in the background and keeps its state in SCAN_JOBS."""
     job = SCAN_JOBS[job_id]
 
@@ -1229,7 +1241,7 @@ async def _scan_job(job_id: str, probes: list, min_delay_s: float) -> None:
     try:
         await scanner.run(probes, send, _gate_wait, audit, min_delay_s=min_delay_s,
                           max_seconds=POLICY.scan_max_seconds, should_stop=lambda: job["stop_requested"],
-                          result=job["result"], on_finding=on_finding)
+                          result=job["result"], on_finding=on_finding, max_requests=max_requests)
         job["state"] = "stopped" if job["result"]["stopped"] else "done"
     except Exception as ex:  # an unexpected error must not silently stop the job
         job["state"] = "error"
@@ -1276,7 +1288,7 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
                          "total": len(probes), "result": {"findings": [], "sent": 0, "errors": 0,
                                                           "stopped": None, "baseline": {}}}
     min_delay_s = max(POLICY.scan_min_delay_ms, 0) / 1000
-    SCAN_JOBS[job_id]["task"] = asyncio.create_task(_scan_job(job_id, probes, min_delay_s))
+    SCAN_JOBS[job_id]["task"] = asyncio.create_task(_scan_job(job_id, probes, min_delay_s, limit))
     plan = _plan_summary(endpoints, probes)
     AUDIT.record("scan_start", "allow", args, summary={"job_id": job_id, "endpoints_in_run": plan["endpoints_in_run"],
                                                         "probes": plan["probes"], "per_check": plan["per_check"]})

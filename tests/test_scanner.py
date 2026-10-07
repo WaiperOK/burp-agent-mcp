@@ -114,5 +114,42 @@ class OnFindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([f["candidate"] for f in seen], ["auth_not_enforced_candidate"])
 
 
+class ReproduceTests(unittest.IsolatedAsyncioTestCase):
+    def _run(self, responses, max_requests=None):
+        ep = scanner.endpoint_from_raw(f"GET /api/patients/101 HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n", "history")
+        probes = scanner.build_probes([ep], ("auth",), 10)
+        queue = list(responses)
+
+        async def send(probe):  # pops scripted responses in order
+            return queue.pop(0)
+
+        async def gate_wait(endpoint):
+            return None
+
+        return scanner.run(probes, send, gate_wait, lambda e: None, min_delay_s=0, max_seconds=30,
+                           should_stop=lambda: False, result={}, on_finding=lambda f: None,
+                           max_requests=max_requests)
+
+    async def test_candidate_that_reproduces_is_marked(self):
+        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        out = await self._run([ok, ok, ok])  # baseline, auth probe, then the repeat of the candidate
+        self.assertTrue(out["findings"][0]["reproduced"])
+
+    async def test_flaky_candidate_is_kept_but_marked(self):
+        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        denied = "HTTP/1.1 403 Forbidden\r\n\r\nno"
+        out = await self._run([ok, ok, denied])  # the repeat is refused: the candidate is not confirmed
+        self.assertEqual(len(out["findings"]), 1)
+        self.assertFalse(out["findings"][0]["reproduced"])
+
+    async def test_repeat_never_exceeds_the_scan_limit(self):
+        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        # the limit is spent by the baseline and the auth probe, so the repeat must be skipped, not sent
+        out = await self._run([ok, ok], max_requests=2)
+        self.assertEqual(out["sent"], 2)
+        self.assertIsNone(out["findings"][0]["reproduced"])
+        self.assertIn("reserved", out["findings"][0]["reproduce_error"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,8 @@ Every active action passes through the same layers. A layer that says no stops t
 | **No traffic to target** | `repeater_tab` creates a tab in Burp Repeater for a person to send by hand · `scan_stop` |
 | **Active** (`mode=active`, `environment` set) | `request_url` · `send_request` · `replay_variant` · `intruder_run` · `scan_start` · `browser_open` · `browser_click` · `browser_fill` · `browser_press` · `browser_back` · `browser_reload` |
 
+`request_url` takes `dry_run=true` to preview the exact request without sending it or spending budget.
+
 `browser_fill` refuses password fields and fields that look like secrets. Secrets are never typed by the agent; logging in is done by a person with the `login` command.
 
 ## Quick start
@@ -169,6 +171,8 @@ The scanner runs four checks per endpoint. Each one produces a *candidate* for m
 | `malformed` | Put a quote where a numeric id is | unhandled server error |
 | `reflect` | Put a unique marker in a query parameter | reflected input |
 
+Each candidate is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet.
+
 Requests are limited by `scan_max_requests` and paced by `scan_min_delay_ms`. The scanner stops on 429 or 503, after a series of errors, or when asked. Findings go to `scan_findings.jsonl` with owner-only permissions.
 
 ## Burp extension
@@ -192,7 +196,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 ./run_tests.sh
 ```
 
-149 tests across ten suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+154 tests across ten suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

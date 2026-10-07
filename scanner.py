@@ -23,6 +23,8 @@ from httpmsg import MsgError
 CHECKS = ("auth", "ids", "malformed", "reflect")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 PUSHBACK = (429, 503)
+# Candidates from these checks are sent once more to see whether they reproduce.
+REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect")
 MAX_ERRORS = 5
 _AUTH = ("cookie", "authorization")
 SEVERITY_HINT = {
@@ -195,17 +197,44 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
     return None
 
 
+async def _reproduce(finding: dict, probe: Probe, base: dict | None, send, gate_wait, audit, result: dict,
+                     min_delay_s: float, spare_requests: int | None = None) -> None:
+    """Sends the same probe once more. A candidate that does not reproduce is kept, but marked.
+
+    spare_requests is the budget not needed by the probes still to come; None means no cap.
+    """
+    if spare_requests is not None and spare_requests < 1:
+        finding["reproduced"] = None
+        finding["reproduce_error"] = "skipped: request budget is reserved for the remaining probes"
+        return
+    try:
+        await gate_wait(probe.endpoint)
+        again = await send(probe)
+    except Exception as ex:  # budget, scope or a transport error: the candidate stays, unverified
+        finding["reproduced"] = None
+        finding["reproduce_error"] = str(ex)[:120]
+        return
+    result["sent"] += 1
+    status = _status(again)
+    text = _body(again)
+    finding["reproduced"] = judge(probe, status, len(text), text, base) is not None
+    finding["second_status"] = status
+    audit({"check": probe.check, "reproduce": True, "status": status})
+    await asyncio.sleep(min_delay_s)
+
+
 async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float, max_seconds: float,
-              should_stop, result: dict, on_finding=None) -> dict:
+              should_stop, result: dict, on_finding=None, max_requests: int | None = None) -> dict:
     """Sequential run. send(probe) -> response; gate_wait(endpoint) waits for the gate window or raises.
 
     result is a dict that is updated during the run (the job status is visible while it runs).
     on_finding(finding), if given, is called as soon as a candidate is found, so nothing is lost on a crash.
+    max_requests caps probes plus repeats; repeats never take budget from probes that are still to come.
     """
     result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {}})
     started = time.monotonic()
     consecutive_errors = 0
-    for probe in probes:
+    for index, probe in enumerate(probes):
         if should_stop():
             result["stopped"] = "stopped by operator"
             break
@@ -245,6 +274,10 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
         base = result["baseline"].get(probe.endpoint.key)
         finding = judge(probe, status, length, text, base)
         if finding:
+            if probe.check in REPRODUCE_CHECKS:
+                # result["sent"] already counts this probe; reserve one slot per probe still unsent
+                spare = None if max_requests is None else max_requests - result["sent"] - (len(probes) - index - 1)
+                await _reproduce(finding, probe, base, send, gate_wait, audit, result, min_delay_s, spare)
             result["findings"].append(finding)
             if on_finding is not None:
                 on_finding(finding)

@@ -377,6 +377,23 @@ class ParseHistoryTests(unittest.TestCase):
         self.assertFalse(items[0]["request_truncated"])
 
 
+class DryRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dry_run_shows_request_without_sending_or_spending_budget(self):
+        SENT.clear()
+        before = server.GATE.usage()["active_total_used"]
+        out = await server.request_url("https://ehealth.test.local/api/patients/102?x=1", "preview",
+                                       headers={"Cookie": "sid=secret123"}, dry_run=True)
+        self.assertTrue(out["dry_run"])
+        self.assertTrue(out["would_send"].startswith("GET /api/patients/102?x=1 HTTP/1.1"))
+        self.assertNotIn("secret123", out["would_send"])  # the cookie value is redacted
+        self.assertEqual(SENT, [])
+        self.assertEqual(server.GATE.usage()["active_total_used"], before)
+
+    async def test_dry_run_still_enforces_scope(self):
+        out = await server.request_url("https://evil.example/", "preview", dry_run=True)
+        self.assertIn("error", out)
+
+
 class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         SENT.clear()
