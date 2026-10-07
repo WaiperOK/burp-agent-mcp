@@ -196,7 +196,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 ./run_tests.sh
 ```
 
-172 tests across eleven suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+175 tests across twelve suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
