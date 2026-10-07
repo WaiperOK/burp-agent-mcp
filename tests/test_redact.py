@@ -1,0 +1,48 @@
+"""Тесты редакции: секреты в заголовках и токенах, ПДн по ключам JSON.
+
+Запуск: python tests/test_redact.py
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from redact import redact_text  # noqa: E402
+
+
+class RedactTests(unittest.TestCase):
+    def test_sensitive_headers(self):
+        out = redact_text("GET / HTTP/1.1\nHost: a\nCookie: sid=abc123\nAuthorization: Basic dXNlcjpwYXNz")
+        self.assertNotIn("abc123", out)
+        self.assertNotIn("dXNlcjpwYXNz", out)
+        self.assertIn("Host: a", out)
+
+    def test_tokens(self):
+        out = redact_text('t: eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl and "Bearer abcdefgh12345678"')
+        self.assertIn("[JWT]", out)
+        self.assertNotIn("abcdefgh12345678", out)
+
+    def test_phi_by_json_keys(self):
+        raw = '{"firstName": "Іван", "lastName": "Петренко", "birthDate": "1980-01-02", "id": 101}'
+        out = redact_text(raw)
+        self.assertNotIn("Іван", out)
+        self.assertNotIn("Петренко", out)
+        self.assertNotIn("1980-01-02", out)
+        self.assertIn('"id": 101', out)  # идентификатор не трогаем
+
+    def test_phi_key_with_escaped_quotes(self):
+        raw = r'{"fullName": "Іван \"Иван\" Петренко", "ok": 1}'
+        out = redact_text(raw)
+        self.assertNotIn("Петренко", out)
+        self.assertIn('"ok": 1', out)
+
+    def test_non_phi_names_kept(self):
+        # название уязвимости не должно маскироваться
+        raw = '{"name": "Unencrypted communications", "severity": "LOW"}'
+        self.assertIn("Unencrypted communications", redact_text(raw))
+
+
+if __name__ == "__main__":
+    unittest.main()

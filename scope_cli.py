@@ -1,0 +1,101 @@
+"""Задание scope и окружения владельцем — из терминала, не через ИИ.
+
+Модель не может расширить scope: эти команды запускаете вы. Перед записью политика проверяется
+загрузчиком; если она станет невалидной, файл не меняется. После правки перезапустите сессию:
+шлюз увидит новую политику только при старте, а до этого активные действия запрещены.
+
+  python scope_cli.py show
+  python scope_cli.py env test            # test | stage | staging | lab
+  python scope_cli.py add-host ehealth.example.test
+  python scope_cli.py add-url https://ehealth.example.test/
+  python scope_cli.py remove-url https://ehealth.example.test/
+  python scope_cli.py add-spec ~/specs/swagger.json
+"""
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from policy import ENVIRONMENTS, Policy, PolicyError  # noqa: E402
+
+
+def policy_path() -> Path:
+    return Path(os.environ.get("BURP_AGENT_POLICY", Path(__file__).with_name("policy.json"))).expanduser()
+
+
+def load_raw(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_checked(path: Path, data: dict) -> None:
+    """Пишет только если политика после записи проходит загрузчик. Атомарная замена файла."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+        tmp = Path(fh.name)
+    try:
+        Policy.load(str(tmp))
+    except PolicyError as ex:
+        tmp.unlink(missing_ok=True)
+        sys.exit(f"не записано: политика станет невалидной: {ex}")
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)  # политика: только владелец
+    print(f"записано: {path}")
+    print("перезапустите сессию (новый чат), чтобы шлюз применил изменения")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Scope и окружение для шлюза burp-agent")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("show")
+    p_env = sub.add_parser("env")
+    p_env.add_argument("value", choices=ENVIRONMENTS)
+    p_host = sub.add_parser("add-host")
+    p_host.add_argument("host")
+    for name in ("add-url", "remove-url"):
+        p = sub.add_parser(name)
+        p.add_argument("url")
+    p_spec = sub.add_parser("add-spec")
+    p_spec.add_argument("file")
+    args = parser.parse_args()
+
+    path = policy_path()
+    if not path.is_file():
+        sys.exit(f"политика не найдена: {path}")
+    data = load_raw(path)
+
+    if args.cmd == "show":
+        keys = ("mode", "environment", "authorized_hosts", "scope_urls", "allowed_methods",
+                "allowed_paths", "openapi_files", "scan_max_requests")
+        print(json.dumps({k: data.get(k) for k in keys}, ensure_ascii=False, indent=2))
+        return
+    if args.cmd == "env":
+        data["environment"] = args.value
+    elif args.cmd == "add-host":
+        hosts = list(data.get("authorized_hosts", []))
+        if args.host.lower() not in hosts:
+            hosts.append(args.host.lower())
+        data["authorized_hosts"] = hosts
+    elif args.cmd == "add-url":
+        urls = list(data.get("scope_urls", []))
+        if args.url not in urls:
+            urls.append(args.url)
+        data["scope_urls"] = urls
+    elif args.cmd == "remove-url":
+        data["scope_urls"] = [u for u in data.get("scope_urls", []) if u != args.url]
+    elif args.cmd == "add-spec":
+        spec = str(Path(args.file).expanduser())
+        files = list(data.get("openapi_files", []))
+        if spec not in files:
+            files.append(spec)
+        data["openapi_files"] = files
+    save_checked(path, data)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+# окружение и кэш
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# реальная политика и её резервные копии: содержат цель и идентификатор проекта
+policy.json
+policy.json.bak-*
+*.bak-*
+
+# данные, которые пишет шлюз: аудит, находки, тела, скриншоты
+audit.jsonl
+findings.jsonl
+scan_findings.jsonl
+burp_agent_*/
+*.tmp
