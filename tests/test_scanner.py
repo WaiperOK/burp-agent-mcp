@@ -6,6 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import asyncio  # noqa: E402
+
 import scanner  # noqa: E402
 from httpmsg import MsgError  # noqa: E402
 
@@ -92,6 +94,24 @@ class JudgeTests(unittest.TestCase):
         f = scanner.judge(scanner.Probe("baseline", anon_ep, anon_ep.raw), "200", 50, "x", None)
         self.assertEqual(f["candidate"], "anonymous_200_candidate")
         self.assertIsNone(scanner.judge(self._probe("baseline"), "200", 50, "x", None))
+
+
+class OnFindingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_callback_fires_for_each_candidate(self):
+        ep = scanner.endpoint_from_raw(f"GET /api/patients/101 HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n", "history")
+        probes = scanner.build_probes([ep], ("auth",), 10)
+
+        async def send(probe):  # the auth probe succeeds: authorization is not enforced
+            return "HTTP/1.1 200 OK\r\n\r\nbody"
+
+        async def gate_wait(endpoint):
+            return None
+
+        seen, result = [], {}
+        out = await scanner.run(probes, send, gate_wait, lambda e: None, min_delay_s=0, max_seconds=30,
+                                should_stop=lambda: False, result=result, on_finding=seen.append)
+        self.assertEqual(len(seen), len(out["findings"]))
+        self.assertEqual([f["candidate"] for f in seen], ["auth_not_enforced_candidate"])
 
 
 if __name__ == "__main__":

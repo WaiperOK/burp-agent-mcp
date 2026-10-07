@@ -279,6 +279,9 @@ async def scope_status() -> dict:
         "authorized_hosts": list(POLICY.authorized_hosts),
         "allowed_methods": list(POLICY.allowed_methods),
         "allowed_paths": list(POLICY.allowed_paths),
+        "environment": POLICY.environment,
+        "scope_urls": list(POLICY.scope_urls),
+        "budget": GATE.usage(),
         "policy_sha256": POLICY.policy_sha256[:16],
         "burp_reachable": reachable,
         "burp_latency_ms": ms,
@@ -1146,6 +1149,11 @@ async def _collect_endpoints(source: str, openapi_name: str | None) -> list[scan
     return list(seen.values())
 
 
+def _budget_remaining() -> int:
+    """Active requests left in max_active_requests_total for this session."""
+    return GATE.usage()["active_total_remaining"]
+
+
 def _plan_summary(endpoints, probes) -> dict:
     per_check: dict[str, int] = {}
     for p in probes:
@@ -1168,14 +1176,19 @@ async def scan_plan(source: str = "history", checks: str = "auth,ids,malformed,r
     try:
         names = _parse_checks(checks)
         limit = max(1, min(int(max_requests), POLICY.scan_max_requests))
+        remaining = _budget_remaining()
+        limit = min(limit, remaining) if remaining > 0 else 0
         endpoints = await _collect_endpoints(source, openapi_name)
-        probes = scanner.build_probes(endpoints, names, limit)
+        probes = scanner.build_probes(endpoints, names, limit) if limit else []
     except (MsgError, UpstreamError, ValueError) as ex:
         AUDIT.record("scan_plan", "deny", args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
     AUDIT.record("scan_plan", "allow", args, summary={"endpoints": len(endpoints), "probes": len(probes)})
+    note = "no traffic sent: call scan_start to run"
+    if remaining <= 0:
+        note = "active request budget is exhausted for this session (max_active_requests_total)"
     return _envelope({"plan": _plan_summary(endpoints, probes), "limit": limit,
-                      "note": "no traffic sent: call scan_start to run"})
+                      "budget_remaining": remaining, "note": note})
 
 
 async def _gate_wait(endpoint) -> None:
@@ -1189,9 +1202,19 @@ async def _gate_wait(endpoint) -> None:
             await asyncio.sleep(2)
 
 
-async def _scan_job(job_id: str, probes: list, min_delay_s: float) -> None:
-    job = SCAN_JOBS[job_id]
+def _append_finding(job_id: str, finding: dict) -> None:
+    """Writes one finding at once, so a crash does not lose the candidates already found."""
     findings_path = Path(POLICY.findings_file).expanduser().parent / "scan_findings.jsonl"
+    findings_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"job_id": job_id, "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **finding}
+    fd = os.open(findings_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)  # owner only
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+async def _scan_job(job_id: str, probes: list, min_delay_s: float) -> None:
+    """Runs one scan job in the background and keeps its state in SCAN_JOBS."""
+    job = SCAN_JOBS[job_id]
 
     async def send(probe):
         ep = probe.endpoint
@@ -1200,29 +1223,21 @@ async def _scan_job(job_id: str, probes: list, min_delay_s: float) -> None:
     def audit(entry):
         AUDIT.record("scan_request", "allow", {"job_id": job_id, **entry})
 
+    def on_finding(finding):
+        _append_finding(job_id, finding)
+
     try:
         await scanner.run(probes, send, _gate_wait, audit, min_delay_s=min_delay_s,
                           max_seconds=POLICY.scan_max_seconds, should_stop=lambda: job["stop_requested"],
-                          result=job["result"])
+                          result=job["result"], on_finding=on_finding)
         job["state"] = "stopped" if job["result"]["stopped"] else "done"
     except Exception as ex:  # an unexpected error must not silently stop the job
         job["state"] = "error"
         job["result"]["stopped"] = f"error: {str(ex)[:200]}"
     finally:
-        findings = job["result"]["findings"]
-        if findings:
-            findings_path.parent.mkdir(parents=True, exist_ok=True)
-            fresh = not findings_path.exists()
-            with open(os.open(findings_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a",
-                      encoding="utf-8") as fh:
-                for f in findings:
-                    fh.write(json.dumps({"job_id": job_id, "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **f},
-                                        ensure_ascii=False) + "\n")
-            if fresh:
-                os.chmod(findings_path, 0o600)
         AUDIT.record("scan_done", "allow", {"job_id": job_id},
                      summary={"state": job["state"], "sent": job["result"]["sent"],
-                              "errors": job["result"]["errors"], "findings": len(findings),
+                              "errors": job["result"]["errors"], "findings": len(job["result"]["findings"]),
                               "stopped": job["result"]["stopped"]})
 
 
@@ -1244,7 +1259,10 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
         if any(j["state"] == "running" for j in SCAN_JOBS.values()):
             raise PolicyError("another scan is already running: stop it or wait for it to finish")
         names = _parse_checks(checks)
-        limit = max(1, min(int(max_requests), POLICY.scan_max_requests))
+        remaining = _budget_remaining()
+        if remaining <= 0:
+            raise PolicyError("active request budget is exhausted (max_active_requests_total)")
+        limit = min(max(1, min(int(max_requests), POLICY.scan_max_requests)), remaining)
         endpoints = await _collect_endpoints(source, openapi_name)
         probes = scanner.build_probes(endpoints, names, limit)
         if not probes:

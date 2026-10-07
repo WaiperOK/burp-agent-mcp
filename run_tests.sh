@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# Runs all gateway test suites. Browser tests need Chromium (playwright install chromium).
+# Runs every test suite. Browser tests need Chromium (playwright install chromium).
+# Interpreter: $PYTHON if set, else ./.venv/bin/python if present, else python3.
 cd "$(dirname "$0")" || exit 1
-PY=./.venv/bin/python
+
+if [ -n "${PYTHON:-}" ]; then
+  PY="$PYTHON"
+elif [ -x ./.venv/bin/python ]; then
+  PY=./.venv/bin/python
+else
+  PY=python3
+fi
+
 status=0
 for t in tests/test_*.py; do
   printf '== %s\n' "$t"

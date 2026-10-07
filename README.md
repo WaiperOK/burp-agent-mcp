@@ -7,7 +7,8 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)
 ![Burp](https://img.shields.io/badge/Burp%20Suite-Montoya%20API-FF6633)
-![Tests](https://img.shields.io/badge/tests-138%20passing-2EA44F)
+[![Tests](https://github.com/WaiperOK/burp-agent-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/WaiperOK/burp-agent-mcp/actions/workflows/tests.yml)
+![License](https://img.shields.io/badge/license-MIT-blue)
 ![Scope](https://img.shields.io/badge/active%20actions-test%20%2F%20stage%20only-orange)
 
 </div>
@@ -112,6 +113,7 @@ The scope belongs to the owner. Set it from a terminal with `scope_cli.py`, not 
 ./.venv/bin/python scope_cli.py add-host app.example.test
 ./.venv/bin/python scope_cli.py add-url https://app.example.test/
 ./.venv/bin/python scope_cli.py add-spec ~/specs/openapi.json
+./.venv/bin/python scope_cli.py set max_active_requests_total 2000
 ```
 
 Each write is validated by the policy loader first; an invalid policy is never saved. Restart the session afterwards, because the gateway reads the policy at startup.
@@ -190,7 +192,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 ./run_tests.sh
 ```
 
-138 tests across nine suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+149 tests across ten suites. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
@@ -217,4 +219,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 - Responses from targets reach the model, even after redaction. Do not use the gateway with real personal data without an agreement.
 - Port and scheme of history records are assumed to be HTTPS on 443 unless the Host header says otherwise. Anything outside the scope is skipped, not guessed.
 - Aggregates over Burp history are cached for 15 seconds. Use `fresh=true` to recompute.
-- No license has been chosen yet.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

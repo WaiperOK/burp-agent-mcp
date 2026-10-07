@@ -426,6 +426,40 @@ class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
             server.POLICY = original
 
 
+class BudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_and_plan_report_budget(self):
+        status = await server.scope_status()
+        self.assertIn("active_total_remaining", status["budget"])
+        plan = await server.scan_plan(source="history")
+        self.assertIn("budget_remaining", plan)
+
+    async def test_scan_is_trimmed_to_remaining_budget(self):
+        original = server.GATE
+        server.GATE = Gate(dataclasses.replace(server.POLICY, max_active_requests_total=4))
+        SENT.clear()
+        try:
+            out = await server.scan_start("budget trim", source="history", max_requests=150)
+            self.assertNotIn("error", out, out)
+            self.assertLessEqual(out["plan"]["probes"], 4)
+            for _ in range(100):
+                status = await server.scan_status(out["job_id"])
+                if status["state"] != "running":
+                    break
+                await asyncio.sleep(0.05)
+            self.assertLessEqual(len(SENT), 4)
+        finally:
+            server.GATE = original
+
+    async def test_exhausted_budget_refuses_scan(self):
+        original = server.GATE
+        server.GATE = Gate(dataclasses.replace(server.POLICY, max_active_requests_total=0))
+        try:
+            out = await server.scan_start("no budget", source="history")
+            self.assertIn("exhausted", out["error"])
+        finally:
+            server.GATE = original
+
+
 class ScanTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         SENT.clear()

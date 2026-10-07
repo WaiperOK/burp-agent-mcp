@@ -10,6 +10,8 @@ the gateway picks up the new policy only at startup, and until then active actio
   python scope_cli.py add-url https://ehealth.example.test/
   python scope_cli.py remove-url https://ehealth.example.test/
   python scope_cli.py add-spec ~/specs/swagger.json
+  python scope_cli.py set max_active_requests_total 2000
+  python scope_cli.py set allowed_methods GET,HEAD,OPTIONS
 """
 
 import argparse
@@ -22,6 +24,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from policy import ENVIRONMENTS, Policy, PolicyError  # noqa: E402
+
+# Keys that `set` may change. Anything else must be edited by hand, on purpose.
+SETTABLE = {
+    "max_active_requests_total": int,
+    "max_requests_per_minute": int,
+    "scan_max_requests": int,
+    "scan_min_delay_ms": int,
+    "intruder_max_requests": int,
+    "intruder_min_delay_ms": int,
+    "allowed_methods": "methods",
+}
 
 
 def policy_path() -> Path:
@@ -62,6 +75,9 @@ def main() -> None:
         p.add_argument("url")
     p_spec = sub.add_parser("add-spec")
     p_spec.add_argument("file")
+    p_set = sub.add_parser("set")
+    p_set.add_argument("key", choices=sorted(SETTABLE))
+    p_set.add_argument("value")
     args = parser.parse_args()
 
     path = policy_path()
@@ -88,6 +104,16 @@ def main() -> None:
         data["scope_urls"] = urls
     elif args.cmd == "remove-url":
         data["scope_urls"] = [u for u in data.get("scope_urls", []) if u != args.url]
+    elif args.cmd == "set":
+        kind = SETTABLE[args.key]
+        if kind == "methods":
+            value = [m.strip().upper() for m in args.value.split(",") if m.strip()]
+        else:
+            try:
+                value = kind(args.value)
+            except ValueError:
+                sys.exit(f"{args.key} expects a {kind.__name__}, got {args.value!r}")
+        data[args.key] = value
     elif args.cmd == "add-spec":
         spec = str(Path(args.file).expanduser())
         files = list(data.get("openapi_files", []))

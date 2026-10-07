@@ -196,10 +196,11 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
 
 
 async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float, max_seconds: float,
-              should_stop, result: dict) -> dict:
+              should_stop, result: dict, on_finding=None) -> dict:
     """Sequential run. send(probe) -> response; gate_wait(endpoint) waits for the gate window or raises.
 
     result is a dict that is updated during the run (the job status is visible while it runs).
+    on_finding(finding), if given, is called as soon as a candidate is found, so nothing is lost on a crash.
     """
     result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {}})
     started = time.monotonic()
@@ -245,6 +246,8 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
         finding = judge(probe, status, length, text, base)
         if finding:
             result["findings"].append(finding)
+            if on_finding is not None:
+                on_finding(finding)
         await asyncio.sleep(min_delay_s)
     return result
 

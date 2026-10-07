@@ -1,5 +1,6 @@
-mcp>=1.30
-openai>=1.50
+# The gateway uses the MCP v1 API (FastMCP); MCP v2 renamed it, so stay on 1.x.
+mcp>=1.30,<2
+openai>=1.50,<4
 playwright>=1.48
 websockets>=13
 uvicorn>=0.30

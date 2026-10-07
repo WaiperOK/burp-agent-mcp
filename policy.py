@@ -239,3 +239,18 @@ class Gate:
                 raise RateLimitError("rate limit: max_requests_per_minute reached")
             self._stamps.append(now)
             self._active_total += 1
+
+    def usage(self) -> dict:
+        """Current budget for this session: the total used and the requests left in the rate window."""
+        p = self.policy
+        with self._lock:
+            now = self._clock()
+            while self._stamps and now - self._stamps[0] > 60:
+                self._stamps.popleft()
+            return {
+                "active_total_used": self._active_total,
+                "active_total_limit": p.max_active_requests_total,
+                "active_total_remaining": max(0, p.max_active_requests_total - self._active_total),
+                "rate_used_last_minute": len(self._stamps),
+                "rate_limit_per_minute": p.max_requests_per_minute,
+            }
