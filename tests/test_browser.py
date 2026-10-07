@@ -1,8 +1,8 @@
-"""Тесты браузерного гарда на настоящем Chromium (Playwright). Сеть наружу не нужна.
+"""Tests for the browser guard on a real Chromium (Playwright). No network access is needed.
 
-Локальный сайт: 127.0.0.1 (в scope). localhost и other.test — вне scope: их ресурсы и WebSocket
-должны обрываться. Запуск: python tests/test_browser.py
-(нужно: pip install playwright websockets && playwright install chromium)
+Local site: 127.0.0.1 (in scope). localhost and other.test are outside the scope: their resources and WebSocket
+must be cut. Run: python tests/test_browser.py
+(needs: pip install playwright websockets && playwright install chromium)
 """
 
 import asyncio
@@ -38,17 +38,17 @@ class Site(BaseHTTPRequestHandler):
     def do_GET(self):
         port = self.server.server_address[1]
         if self.path == "/":
-            body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Стенд</title>
+            body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Test stand</title>
 <script src="http://localhost:{port}/x.js"></script></head>
-<body><p>Пациент тестовый</p>
+<body><p>Test patient</p>
 <a href="/next">next</a>
 <a href="http://localhost:{port}/other">localhost link</a>
 <a href="http://other.test/">external</a></body></html>""".encode()
             ctype = "text/html; charset=utf-8"
         elif self.path == "/next":
-            body, ctype = "<!doctype html><title>Дальше</title><p>next page</p>".encode(), "text/html; charset=utf-8"
+            body, ctype = "<!doctype html><title>Next</title><p>next page</p>".encode(), "text/html; charset=utf-8"
         elif self.path == "/form":
-            body = """<!doctype html><html><head><meta charset="utf-8"><title>Форма</title></head><body>
+            body = """<!doctype html><html><head><meta charset="utf-8"><title>Form</title></head><body>
 <form action="/submit" method="post">
 <input name="q" id="q" type="text">
 <input name="password" id="pw" type="password">
@@ -80,7 +80,7 @@ setTimeout(() => {{ window.wsBad = window.wsBad || "timeout"; }}, 4000);
 
 
 def start_ws_echo():
-    """Echo-сервер WebSocket на 127.0.0.1 в отдельном потоке."""
+    """WebSocket echo server on 127.0.0.1 in a separate thread."""
     import websockets
 
     ready = threading.Event()
@@ -145,21 +145,21 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
         except BrowserError as ex:
             msg = str(ex).lower()
             if "playwright" in msg or "executable" in msg or "browser start" in msg:
-                self.skipTest(f"браузер недоступен: {ex}")
+                self.skipTest(f"browser is not available: {ex}")
             raise
 
-    # ----- навигация и гард -----
+    # ----- navigation and guard -----
 
     async def test_open_in_scope(self):
         out = await self._open_or_skip(self.base + "/")
-        self.assertEqual(out["title"], "Стенд")
+        self.assertEqual(out["title"], "Test stand")
         self.assertEqual(out["status"], 200)
 
     async def test_out_of_scope_subresource_is_blocked(self):
         await self._open_or_skip(self.base + "/")
         self.assertIn("localhost", self.browser.blocked)
         text = await self.browser.text()
-        self.assertIn("Пациент тестовый", text)
+        self.assertIn("Test patient", text)
 
     async def test_out_of_scope_navigation_refused_before_browser(self):
         with self.assertRaises(PolicyError):
@@ -191,7 +191,7 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_websocket_in_scope_passes_and_out_of_scope_blocked(self):
         if not self.ws_available:
-            self.skipTest("websockets не установлен")
+            self.skipTest("websockets is not installed")
         await self._open_or_skip(self.base + "/ws")
         self.assertTrue(self.browser.ws_guarded)
         page = await self.browser._ensure()
@@ -201,8 +201,8 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
             if ok and bad:
                 break
             await asyncio.sleep(0.1)
-        self.assertEqual(ok, "echo:ping")  # 127.0.0.1 в scope: соединение пошло
-        self.assertNotEqual(bad, "opened")  # localhost вне scope: соединение оборвано
+        self.assertEqual(ok, "echo:ping")  # 127.0.0.1 is in scope: the connection went through
+        self.assertNotEqual(bad, "opened")  # localhost is outside the scope: the connection was cut
         self.assertIn("localhost", self.browser.blocked)
 
     async def test_navigation_outside_scope_url_prefix_refused(self):
@@ -215,12 +215,12 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
         }), encoding="utf-8")
         browser = GuardedBrowser(Policy.load(str(scoped_path)))
         try:
-            with self.assertRaises(PolicyError):  # хост разрешён, но путь вне scope_urls
+            with self.assertRaises(PolicyError):  # the host is allowed, but the path is outside scope_urls
                 await browser.open(self.base + "/")
         finally:
             await browser.close()
 
-    # ----- формы и ввод -----
+    # ----- forms and input -----
 
     async def test_forms_mark_password_as_sensitive(self):
         await self._open_or_skip(self.base + "/form")
@@ -232,9 +232,9 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fill_text_field_works(self):
         await self._open_or_skip(self.base + "/form")
-        await self.browser.fill("#q", "тест")
+        await self.browser.fill("#q", "test")
         page = await self.browser._ensure()
-        self.assertEqual(await page.input_value("#q"), "тест")
+        self.assertEqual(await page.input_value("#q"), "test")
 
     async def test_fill_password_refused(self):
         await self._open_or_skip(self.base + "/form")
@@ -266,7 +266,7 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["forms"], 1)
         self.assertEqual(state["host"], "127.0.0.1")
 
-    # ----- скриншот -----
+    # ----- screenshot -----
 
     async def test_screenshot_written_with_private_permissions(self):
         await self._open_or_skip(self.base + "/")

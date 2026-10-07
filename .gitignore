@@ -1,15 +1,15 @@
-# окружение и кэш
+# environment and cache
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# реальная политика и её резервные копии: содержат цель и идентификатор проекта
+# the real policy and its backups: they contain the target and the project identifier
 policy.json
 policy.json.bak-*
 *.bak-*
 
-# данные, которые пишет шлюз: аудит, находки, тела, скриншоты
+# data written by the gateway: audit, findings, bodies, screenshots
 audit.jsonl
 findings.jsonl
 scan_findings.jsonl

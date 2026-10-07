@@ -1,7 +1,7 @@
-"""Чистые функции для HTTP/1.1-сообщений и записей Burp history. Без сети и без состояния.
+"""Pure functions for HTTP/1.1 messages and Burp history records. No network and no state.
 
-Здесь разбор ответа upstream (включая частичные записи), сборка запросов и подстановка
-значений в позицию (для Intruder). Всё, что ломается на входе, бросает MsgError.
+This module parses upstream responses (including partial records), builds requests and substitutes values
+into a position (for Intruder). Anything that breaks on input raises MsgError.
 """
 
 import json
@@ -22,7 +22,7 @@ PROTECTED_HEADERS = ("host", "content-length", "transfer-encoding")
 
 
 class MsgError(ValueError):
-    """Ошибка разбора или сборки HTTP-сообщения. Текст уходит модели, поэтому без секретов."""
+    """Error while parsing or building an HTTP message. The text goes to the model, so it contains no secrets."""
 
 
 def host_from_request(raw: str) -> str | None:
@@ -43,7 +43,7 @@ def split_request(raw: str) -> tuple[str, str]:
 
 
 def normalize_path(path: str) -> str:
-    """Шаблон пути без query: числовые, UUID и hex-сегменты заменяются на {id}."""
+    """Path template without the query: numeric, UUID and hex segments are replaced with {id}."""
     segs = []
     for s in path.split("?", 1)[0].split("/"):
         if _NUM_RE.match(s) or _UUID_RE.match(s) or _HEX_RE.match(s):
@@ -59,7 +59,7 @@ def status_of(response: str) -> str | None:
 
 
 def header_of(head: str, name: str) -> str:
-    """Значение заголовка из блока заголовков (первая строка — статусная или request line)."""
+    """Header value from the header block (the first line is the status or request line)."""
     for line in head.split("\n")[1:]:
         k, _, v = line.partition(":")
         if k.strip().lower() == name:
@@ -68,7 +68,7 @@ def header_of(head: str, name: str) -> str:
 
 
 def json_fragment(fragment: str) -> str:
-    """Раскодирует обрезанный фрагмент JSON-строки; незавершённый хвост escape отбрасывается."""
+    """Decodes a truncated JSON string fragment; an unfinished escape at the end is dropped."""
     fragment = _TRUNC_RE.sub("", fragment)
     for cut in range(6):
         candidate = fragment[: len(fragment) - cut] if cut else fragment
@@ -80,22 +80,22 @@ def json_fragment(fragment: str) -> str:
 
 
 def parse_partial(line: str) -> dict | None:
-    """Частичная запись: upstream обрезает каждое поле примерно до 5000 символов."""
+    """Partial record: upstream truncates each field to about 5000 characters."""
     if not line.startswith(PARTIAL_START):
         return None
     req_raw, sep, resp_raw = line[len(PARTIAL_START):].partition(PARTIAL_SPLIT)
-    if sep:  # запрос целый, обрезан ответ
+    if sep:  # the request is complete, the response is truncated
         return {"request": json_fragment(req_raw), "response": json_fragment(resp_raw),
                 "request_truncated": False, "response_truncated": True}
-    # обрезан уже запрос: по нему нельзя повторять
+    # the request itself is truncated: it cannot be replayed
     return {"request": json_fragment(req_raw), "response": "",
             "request_truncated": True, "response_truncated": True}
 
 
 def parse_history(raw: str) -> list[dict]:
-    """Разбирает ответ get_proxy_http_history: JSON-список, записи по строкам или частичные записи."""
+    """Parses a get_proxy_http_history response: a JSON list, records line by line, or partial records."""
     text = raw.strip()
-    # Burp отвечает текстом «Reached end of items», когда история закончилась.
+    # Burp replies with the text "Reached end of items" when the history is exhausted.
     if not text or text.startswith("Reached end of items"):
         return []
     try:
@@ -103,7 +103,7 @@ def parse_history(raw: str) -> list[dict]:
         if isinstance(whole, list):
             return whole
     except json.JSONDecodeError:
-        pass  # это не один JSON, разбираем построчно
+        pass  # not a single JSON document: parse line by line
 
     items = []
     for line in text.split("\n"):
@@ -125,9 +125,9 @@ def parse_history(raw: str) -> list[dict]:
 
 
 def json_records(raw: str) -> tuple[list[dict], bool]:
-    """Записи-объекты JSON из ответа Burp: один JSON-список, один объект или по строкам.
+    """JSON object records from a Burp response: one JSON list, one object, or records line by line.
 
-    Возвращает (записи, обрезан_ли_вывод). Нераспознанные строки пропускаются, а не роняют разбор.
+    Returns (records, whether the output was truncated). Unrecognised lines are skipped instead of failing the parse.
     """
     text = raw.strip()
     truncated = text.endswith("(truncated)")
@@ -151,7 +151,7 @@ def json_records(raw: str) -> tuple[list[dict], bool]:
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
-            continue  # обрезанная последняя строка или посторонний текст
+            continue  # a truncated last line or stray text
         if isinstance(obj, dict):
             records.append(obj)
     return records, truncated
@@ -159,7 +159,7 @@ def json_records(raw: str) -> tuple[list[dict], bool]:
 
 def build_request(orig: str, method: str, path: str, set_headers: dict | None = None,
                   remove_headers: list | None = None, body: str | None = None) -> str:
-    """Собирает HTTP/1.1-запрос из записи history с изменениями. Host не меняется, Content-Length пересчитывается."""
+    """Builds an HTTP/1.1 request from a history record with changes. Host is kept, Content-Length is recalculated."""
     text = orig.replace("\r\n", "\n")
     head, _, orig_body = text.partition("\n\n")
     first = head.split("\n", 1)[0].split()
@@ -204,7 +204,7 @@ def parse_position(spec: str) -> tuple[str, str]:
 
 
 def apply_position(orig: str, spec: str, payload: str) -> str:
-    """Подставляет payload в позицию исходного запроса и возвращает новый сырой запрос."""
+    """Substitutes a payload into a position of the original request and returns the new raw request."""
     kind, name = parse_position(spec)
     method, path = split_request(orig)
     base, _, query = path.partition("?")
@@ -219,7 +219,7 @@ def apply_position(orig: str, spec: str, payload: str) -> str:
                 found = True
                 new_pieces.append(f"{name}={quote(payload, safe='')}")
             else:
-                new_pieces.append(piece)  # остальные параметры — байт в байт
+                new_pieces.append(piece)  # other parameters are kept byte for byte
         if not found:
             raise MsgError(f"query parameter not found: {name}")
         return build_request(orig, method, base + "?" + "&".join(new_pieces))
@@ -227,7 +227,7 @@ def apply_position(orig: str, spec: str, payload: str) -> str:
     if kind == "path":
         parts = base.split("/")
         try:
-            index = int(name) + 1  # parts[0] == "" (ведущий слэш)
+            index = int(name) + 1  # parts[0] == "" (leading slash)
         except ValueError:
             raise MsgError("path position index must be an integer") from None
         if not (1 <= index < len(parts)):
@@ -244,7 +244,7 @@ def apply_position(orig: str, spec: str, payload: str) -> str:
             raise MsgError(f"header not found: {name}")
         return build_request(orig, method, path, set_headers={name: payload})
 
-    # json: поля тела, существующие в объекте (без создания новых ключей)
+    # json: body fields that already exist in the object (no new keys are created)
     body = orig.replace("\r\n", "\n").partition("\n\n")[2]
     try:
         data = json.loads(body)
@@ -274,10 +274,10 @@ def _step(cur, key: str):
 
 def build_from_url(url: str, method: str = "GET", headers: dict | None = None,
                    body: str | None = None) -> tuple[str, str, int, bool]:
-    """Собирает запрос по полному URL. Возвращает (сырой запрос, host, port, use_https).
+    """Builds a request from a full URL. Returns (raw request, host, port, use_https).
 
-    Host и порт берутся из URL, Content-Length считается сам. Заголовки Host, Content-Length
-    и Transfer-Encoding задать нельзя: это делает сборщик.
+    Host and port come from the URL; Content-Length is computed here. The Host, Content-Length
+    and Transfer-Encoding headers cannot be set manually: the builder handles them.
     """
     try:
         parts = urlsplit(url)

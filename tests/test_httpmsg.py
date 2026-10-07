@@ -1,6 +1,6 @@
-"""Тесты чистых функций HTTP: разбор истории, сборка запроса, подстановка позиций для Intruder.
+"""Tests for the pure HTTP functions: history parsing, request building, position substitution for Intruder.
 
-Запуск: python tests/test_httpmsg.py
+Run: python tests/test_httpmsg.py
 """
 
 import json
@@ -35,7 +35,7 @@ class ApplyPositionTests(unittest.TestCase):
             apply_position(GET_QUERY, "query:absent", "1")
 
     def test_path_segment(self):
-        # индексы 0-based по сегментам после ведущего слэша: /api/visits -> api(0), visits(1)
+        # 0-based segment indices after the leading slash: /api/visits -> api(0), visits(1)
         out = apply_position(GET_QUERY, "path:1", "7")
         self.assertTrue(out.startswith("GET /api/7?patient=101&lang=uk&sort= HTTP/1.1"))
 

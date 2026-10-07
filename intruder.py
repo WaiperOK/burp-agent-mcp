@@ -1,9 +1,9 @@
-"""Intruder: последовательная подстановка payload в одну позицию запроса.
+"""Intruder: sequential substitution of a payload into one position of a request.
 
-Намеренно без параллельности и с жёсткими потолками: это проверка гипотез (например, IDOR по id),
-а не нагрузка на стенд. Останавливается при 429/503, серии ошибок, отказе гарда, превышении
-времени и на первом payload, который нельзя подставить. Перебор аутентификации запрещён:
-цели с login/token/otp/password и заголовки Authorization/Cookie отклоняются до первого запроса.
+Deliberately sequential, with hard ceilings: it is for testing hypotheses (for example IDOR by id),
+not for load. It stops on 429/503, on a series of errors, on a guard refusal, on a time limit,
+and on the first payload that cannot be substituted. Brute-forcing authentication is forbidden:
+targets with login/token/otp/password and the Authorization/Cookie headers are refused before the first request.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ FORBIDDEN_HEADERS = ("authorization", "cookie", "proxy-authorization")
 
 
 def check_target(raw_base: str, position: str, payloads: list[str]) -> None:
-    """Отказ до первого запроса: аутентификация, учётные данные, размер payload-списка."""
+    """Refusal before the first request: authentication, credentials, payload list size."""
     kind, name = parse_position(position)
     if kind == "header" and name.lower() in FORBIDDEN_HEADERS:
         raise MsgError("intruder cannot target auth headers")
@@ -43,7 +43,7 @@ def check_target(raw_base: str, position: str, payloads: list[str]) -> None:
 
 
 def is_truncated(response: str) -> bool:
-    """Burp дописывает «(truncated)», когда обрезал вывод: длина такого ответа не сравнима."""
+    """Burp appends "(truncated)" when it cut the output: the length of such a response cannot be compared."""
     return response.rstrip().endswith("(truncated)")
 
 
@@ -54,9 +54,9 @@ def body_length(response: str) -> int:
 
 async def run(raw_base: str, position: str, payloads: list[str], send, gate, audit, *,
               max_requests: int, min_delay_s: float, baseline: bool = True) -> dict:
-    """send(raw_request) -> сырой ответ (awaitable). gate() бросает исключение, если нельзя слать.
+    """send(raw_request) -> raw response (awaitable). gate() raises if sending is not allowed.
 
-    audit(entry) получает запись на каждый отправленный запрос (без значений payload, только sha256).
+    audit(entry) receives one record per sent request (without payload values, only the sha256).
     """
     started = time.monotonic()
     result: dict = {"rows": [], "stopped": None, "baseline": None, "errors": 0}
@@ -89,7 +89,7 @@ async def run(raw_base: str, position: str, payloads: list[str], send, gate, aud
             break
         try:
             gate()
-        except Exception as ex:  # гард, лимит частоты, режим — останавливаем запуск целиком
+        except Exception as ex:  # guard, rate limit, mode: stop the whole run
             result["stopped"] = f"gate: {str(ex)[:200]}"
             break
 

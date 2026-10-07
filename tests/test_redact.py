@@ -1,6 +1,6 @@
-"""Тесты редакции: секреты в заголовках и токенах, ПДн по ключам JSON.
+"""Redaction tests: secrets in headers and tokens, personal data by JSON keys.
 
-Запуск: python tests/test_redact.py
+Run: python tests/test_redact.py
 """
 
 import sys
@@ -25,21 +25,21 @@ class RedactTests(unittest.TestCase):
         self.assertNotIn("abcdefgh12345678", out)
 
     def test_phi_by_json_keys(self):
-        raw = '{"firstName": "Іван", "lastName": "Петренко", "birthDate": "1980-01-02", "id": 101}'
+        raw = '{"firstName": "John", "lastName": "Smith", "birthDate": "1980-01-02", "id": 101}'
         out = redact_text(raw)
-        self.assertNotIn("Іван", out)
-        self.assertNotIn("Петренко", out)
+        self.assertNotIn("John", out)
+        self.assertNotIn("Smith", out)
         self.assertNotIn("1980-01-02", out)
-        self.assertIn('"id": 101', out)  # идентификатор не трогаем
+        self.assertIn('"id": 101', out)  # the identifier is not touched
 
     def test_phi_key_with_escaped_quotes(self):
-        raw = r'{"fullName": "Іван \"Иван\" Петренко", "ok": 1}'
+        raw = r'{"fullName": "John \"Johnny\" Smith", "ok": 1}'
         out = redact_text(raw)
-        self.assertNotIn("Петренко", out)
+        self.assertNotIn("Smith", out)
         self.assertIn('"ok": 1', out)
 
     def test_non_phi_names_kept(self):
-        # название уязвимости не должно маскироваться
+        # a vulnerability title must not be masked
         raw = '{"name": "Unencrypted communications", "severity": "LOW"}'
         self.assertIn("Unencrypted communications", redact_text(raw))
 

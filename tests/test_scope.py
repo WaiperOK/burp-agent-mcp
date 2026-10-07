@@ -1,6 +1,6 @@
-"""Тесты scope по URL: префиксы, порты, обход каталогов, валидация политики, окружение.
+"""Tests for URL scope: prefixes, ports, directory traversal, policy validation, environment.
 
-Запуск: python tests/test_scope.py
+Run: python tests/test_scope.py
 """
 
 import json

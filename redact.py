@@ -1,4 +1,4 @@
-"""Очистка данных перед тем, как они попадут в модель или в аудит-лог."""
+"""Sanitising data before it reaches the model or the audit log."""
 
 import re
 
@@ -23,8 +23,8 @@ _PATTERNS = (
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
 )
 
-# ПДн по именам полей JSON: значения заменяются целиком. Телефоны и номера в свободном тексте
-# не ищем: шаблоны дают много ложных срабатываний (ID, timestamp), поэтому маскируем по ключам.
+# Personal data by JSON field names: values are replaced entirely. Phone numbers and IDs in free text
+# are not searched for: such patterns give many false positives (IDs, timestamps), so we mask by key.
 PHI_KEYS = (
     "firstName", "lastName", "middleName", "patronymic", "fullName",
     "birthDate", "dateOfBirth", "birthday", "phone", "phoneNumber", "mobile", "address",
@@ -34,7 +34,7 @@ _PHI_KEY_RE = re.compile(r'("(?:' + "|".join(PHI_KEYS) + r')"\s*:\s*)"(?:[^"\\]|
 
 
 def redact_text(text: str) -> str:
-    """Скрывает чувствительные заголовки, типовые секреты и ПДн по ключам JSON."""
+    """Hides sensitive headers, common secrets and personal data by JSON key."""
     text = _HEADER_RE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
@@ -42,7 +42,7 @@ def redact_text(text: str) -> str:
 
 
 def truncate(text: str, limit: int) -> tuple[str, bool]:
-    """Режет текст до limit символов, возвращает (текст, был_ли_обрезан)."""
+    """Cuts text to limit characters; returns (text, whether it was cut)."""
     if len(text) <= limit:
         return text, False
     return text[:limit], True

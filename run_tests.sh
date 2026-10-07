@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Запуск всех наборов тестов шлюза. Браузерные тесты нужны Chromium (playwright install chromium).
+# Runs all gateway test suites. Browser tests need Chromium (playwright install chromium).
 cd "$(dirname "$0")" || exit 1
 PY=./.venv/bin/python
 status=0

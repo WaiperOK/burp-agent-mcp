@@ -1,8 +1,8 @@
-"""Задание scope и окружения владельцем — из терминала, не через ИИ.
+"""Setting the scope and environment as the owner, from the terminal, not through the AI.
 
-Модель не может расширить scope: эти команды запускаете вы. Перед записью политика проверяется
-загрузчиком; если она станет невалидной, файл не меняется. После правки перезапустите сессию:
-шлюз увидит новую политику только при старте, а до этого активные действия запрещены.
+The model cannot widen the scope: you run these commands. Before writing, the policy is validated
+by the loader; if it would become invalid, the file is not changed. After an edit restart the session:
+the gateway picks up the new policy only at startup, and until then active actions are refused.
 
   python scope_cli.py show
   python scope_cli.py env test            # test | stage | staging | lab
@@ -33,7 +33,7 @@ def load_raw(path: Path) -> dict:
 
 
 def save_checked(path: Path, data: dict) -> None:
-    """Пишет только если политика после записи проходит загрузчик. Атомарная замена файла."""
+    """Writes only if the policy still passes the loader after the write. Atomic file replacement."""
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
@@ -42,15 +42,15 @@ def save_checked(path: Path, data: dict) -> None:
         Policy.load(str(tmp))
     except PolicyError as ex:
         tmp.unlink(missing_ok=True)
-        sys.exit(f"не записано: политика станет невалидной: {ex}")
+        sys.exit(f"not written: the policy would become invalid: {ex}")
     os.replace(tmp, path)
-    os.chmod(path, 0o600)  # политика: только владелец
-    print(f"записано: {path}")
-    print("перезапустите сессию (новый чат), чтобы шлюз применил изменения")
+    os.chmod(path, 0o600)  # policy: owner only
+    print(f"written: {path}")
+    print("restart the session (new chat) so the gateway applies the changes")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scope и окружение для шлюза burp-agent")
+    parser = argparse.ArgumentParser(description="Scope and environment for the burp-agent gateway")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("show")
     p_env = sub.add_parser("env")
@@ -66,7 +66,7 @@ def main() -> None:
 
     path = policy_path()
     if not path.is_file():
-        sys.exit(f"политика не найдена: {path}")
+        sys.exit(f"policy not found: {path}")
     data = load_raw(path)
 
     if args.cmd == "show":

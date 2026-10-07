@@ -1,4 +1,4 @@
-"""Тесты правил сканера: какие пробы строятся и что считается кандидатом. Запуск: python tests/test_scanner.py"""
+"""Scanner rule tests: which probes are built and what counts as a candidate. Run: python tests/test_scanner.py"""
 
 import sys
 import unittest
@@ -33,11 +33,11 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([p.check for p in probes], ["baseline", "auth"])
 
     def test_budget_covers_whole_endpoints_not_only_baselines(self):
-        # разные шаблоны пути: один представитель на шаблон, поэтому пути должны различаться
+        # distinct path templates: one representative per template, so the paths must differ
         eps = [scanner.endpoint_from_raw(f"GET /api/{name}/{i} HTTP/1.1\r\nHost: {HOST}\r\n\r\n", "history")
                for name, i in (('a', 1), ('b', 2), ('c', 3))]
         checks = ("ids", "malformed", "reflect")
-        one = scanner.build_probes(eps, checks, 7)  # один эндпоинт = 5 проб; второй целиком не влезает
+        one = scanner.build_probes(eps, checks, 7)  # one endpoint = 5 probes; the second one does not fit whole
         self.assertEqual(len({p.endpoint.key for p in one}), 1)
         self.assertEqual({p.check for p in one}, {"baseline", "ids", "malformed", "reflect"})
         two = scanner.build_probes(eps, checks, 10)

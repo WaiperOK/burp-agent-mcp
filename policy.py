@@ -1,4 +1,4 @@
-"""Политика: scope (хосты и URL), окружение, режим, лимиты. Fail-closed: при ошибке конфига сервер не стартует."""
+"""Policy: scope (hosts and URLs), environment, mode and limits. Fail-closed: if the config is invalid, the server does not start."""
 
 import hashlib
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 MODES = ("read_only", "active")
-# Активные действия разрешены только на тестовых окружениях. Назначает владелец политики.
+# Active actions are allowed only in test environments. The policy owner sets this.
 ENVIRONMENTS = ("test", "stage", "staging", "lab")
 _HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
 _DEFAULT_PORT = {"http": 80, "https": 443}
@@ -22,17 +22,17 @@ class PolicyError(Exception):
 
 
 class RateLimitError(PolicyError):
-    """Лимит частоты: вызывающий может подождать окно и повторить (в отличие от прочих отказов)."""
+    """Rate limit: the caller may wait for the window and retry (unlike other refusals)."""
 
 
 def _norm_path(path: str) -> str | None:
-    """Путь без dot-сегментов и закодированных точек. None — путь подозрительный (обход каталогов)."""
+    """Path without dot segments or encoded dots. None means the path is suspicious (directory traversal)."""
     if "%2e" in path.lower() or "%2f" in path.lower() or "%5c" in path.lower():
         return None
     segments = []
     for seg in path.split("/"):
         if seg in ("..", "."):
-            return None  # не нормализуем молча: такой путь запрещён целиком
+            return None  # do not normalise silently: such a path is refused entirely
         segments.append(seg)
     return "/".join(segments) or "/"
 
@@ -57,32 +57,32 @@ class Policy:
     universal_output_dir: str
     upstream_sse_url: str
     max_response_chars: int = 20000
-    # Окружение: активные действия разрешены только при test/stage/staging/lab.
+    # Environment: active actions are allowed only for test/stage/staging/lab.
     environment: str = ""
-    # Scope по URL: https://host/prefix. Пусто = весь хост из authorized_hosts.
+    # Scope by URL: https://host/prefix. Empty means the whole host from authorized_hosts.
     scope_urls: tuple = ()
-    # Пустой allowed_paths = повторы запросов (replay_variant, intruder, repeater) запрещены полностью.
+    # Empty allowed_paths means replays (replay_variant, intruder, repeater) are refused entirely.
     allowed_paths: tuple = ()
-    # Файлы спецификаций OpenAPI, доступные инструментам openapi_coverage и scan (по basename).
+    # OpenAPI specification files used by openapi_coverage and scan (matched by basename).
     openapi_files: tuple = ()
-    # Файл, куда расширение Burp пишет пассивные находки (JSON lines).
+    # File where the Burp extension writes passive findings (JSON lines).
     findings_file: str = "~/burp_agent_findings/findings.jsonl"
-    # Прокси Burp для браузера; None — браузер ходит напрямую (только для локальных тестов).
+    # Burp proxy for the browser; None means the browser connects directly (local tests only).
     browser_proxy: str | None = "http://127.0.0.1:8080"
     browser_profile_dir: str = "~/burp_agent_browser_profile"
-    # Intruder: жёсткие потолки на запуск, защита от нагрузки на стенд.
+    # Intruder: hard ceilings per run, protection against overloading the target.
     intruder_max_requests: int = 50
     intruder_min_delay_ms: int = 300
-    # Сканер по URL: потолок запросов на запуск, пауза, общий лимит времени.
+    # URL scanner: request ceiling per run, pause, overall time limit.
     scan_max_requests: int = 150
     scan_min_delay_ms: int = 300
     scan_max_seconds: int = 1800
-    # Каталог с файлами payload (имя файла, без путей). Пусто = только inline-список.
+    # Directory with payload files (file name only, no paths). Empty means the inline list only.
     payload_dir: str = "~/burp_agent_payloads"
     screenshots_dir: str = "~/burp_agent_findings/screenshots"
-    # Не загружать картинки, шрифты и медиа в браузере гарда: быстрее и меньше шума.
+    # Do not load images, fonts and media in the guarded browser: faster, less noise.
     block_heavy_resources: bool = True
-    # Сколько последних записей history просматривает один инструмент.
+    # How many of the most recent history records one tool scans.
     max_history_records: int = 500
     policy_sha256: str = ""
 
@@ -161,7 +161,7 @@ class Policy:
         return self.environment in ENVIRONMENTS
 
     def path_allowed(self, path: str) -> bool:
-        """Путь разрешён, только если начинается с одного из префиксов allowed_paths и без обхода каталогов."""
+        """Path is allowed only if it starts with one of the allowed_paths prefixes and has no directory traversal."""
         if not path.startswith("/") or any(c in path for c in "\r\n \t"):
             return False
         if _norm_path(path.split("?", 1)[0]) is None:
@@ -175,7 +175,7 @@ class Policy:
         return any(_host_match(h, pattern) for pattern in self.authorized_hosts)
 
     def url_in_scope(self, url: str) -> bool:
-        """URL в scope: хост авторизован и (если заданы scope_urls) URL попадает в один из префиксов."""
+        """URL is in scope: the host is authorized and, if scope_urls are set, the URL matches one of the prefixes."""
         try:
             parts = urlsplit(url)
         except ValueError:
@@ -212,7 +212,7 @@ def _host_match(host: str, pattern: str) -> bool:
 
 
 class Gate:
-    """Решает, можно ли выполнить действие. Проверки выполняются в коде, а не в промпте модели."""
+    """Decides whether an action may run. The checks run in code, not in the model prompt."""
 
     def __init__(self, policy: Policy, clock=time.monotonic):
         self.policy = policy

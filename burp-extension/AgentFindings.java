@@ -23,16 +23,16 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Пассивные проверки и экспорт тел для агента. Ничего не отправляет на цели: только читает ответы,
- * которые уже прошли через Burp.
+ * Passive checks and body export for the agent. Nothing is sent to the target: they only read responses
+ * that have already passed through Burp.
  *
- * - Находки: ~/burp_agent_findings/findings.jsonl (JSON lines), шлюз читает инструментом read_passive_findings.
- * - Тела JavaScript целиком (без обрезки): ~/burp_agent_findings/bodies/<sha256>.txt и index.jsonl,
- *   шлюз ищет по ним инструментом search_bundles. HTML намеренно не экспортируется.
+ * - Findings: ~/burp_agent_findings/findings.jsonl (JSON lines); the gateway reads them with read_passive_findings.
+ * - Full JavaScript bodies (not truncated): ~/burp_agent_findings/bodies/<sha256>.txt and index.jsonl,
+ *   the gateway searches them with search_bundles. HTML is deliberately not exported.
  *
- * Загружает человек: Extensions -> Add -> Java -> AgentFindings.jar.
- * Область: ~/burp_agent_findings/scope.txt, по одному хосту на строку ("*.example.test" — все поддомены).
- * Без scope.txt расширение ничего не пишет.
+ * Loaded by the person: Extensions -> Add -> Java -> AgentFindings.jar.
+ * Scope: ~/burp_agent_findings/scope.txt, one host per line ("*.example.test" means all subdomains).
+ * Without scope.txt the extension writes nothing.
  */
 public class AgentFindings implements BurpExtension {
     private static final Path DIR = Path.of(System.getProperty("user.home"), "burp_agent_findings");
@@ -43,7 +43,7 @@ public class AgentFindings implements BurpExtension {
     private static final int MAX_BODY_SCAN = 200_000;
     private static final int MAX_EXPORT = 5 * 1024 * 1024;
     private static final int MAX_SEEN = 10_000;
-    // Находки и тела JS содержат данные стенда: только владелец может читать.
+    // Findings and JS bodies contain target data: only the owner may read them.
     private static final Set<PosixFilePermission> OWNER_FILE = PosixFilePermissions.fromString("rw-------");
     private static final Set<PosixFilePermission> OWNER_DIR = PosixFilePermissions.fromString("rwx------");
 
@@ -93,13 +93,13 @@ public class AgentFindings implements BurpExtension {
 
             String contentType = response.headerValue("Content-Type");
             String ctLower = contentType == null ? "" : contentType.toLowerCase();
-            // Экспортируем только JavaScript: HTML медицинских страниц может содержать ПДн в готовой разметке.
+            // Export JavaScript only: HTML of medical pages may contain personal data in the rendered markup.
             if (ctLower.contains("javascript")) {
                 exportBody(host, path, ctLower, response.body().getBytes());
             }
 
             if (JWT.matcher(url).find()) {
-                record(host, path, "jwt_in_url", "JWT-подобная строка в URL (значение не сохраняется)");
+                record(host, path, "jwt_in_url", "JWT-like string in the URL (value is not stored)");
             }
 
             String body = response.bodyToString();
@@ -107,7 +107,7 @@ public class AgentFindings implements BurpExtension {
                 body = body.substring(0, MAX_BODY_SCAN);
             }
             if (JWT.matcher(body).find()) {
-                record(host, path, "jwt_in_response_body", "JWT-подобная строка в теле ответа (значение не сохраняется)");
+                record(host, path, "jwt_in_response_body", "JWT-like string in the response body (value is not stored)");
             }
 
             for (HttpHeader h : response.headers()) {
@@ -127,20 +127,20 @@ public class AgentFindings implements BurpExtension {
 
             if (ctLower.contains("text/html")) {
                 if (!response.hasHeader("Content-Security-Policy")) {
-                    record(host, path, "html_no_csp", "HTML без Content-Security-Policy");
+                    record(host, path, "html_no_csp", "HTML without Content-Security-Policy");
                 }
                 if (https && !response.hasHeader("Strict-Transport-Security")) {
-                    record(host, path, "html_no_hsts", "HTML без Strict-Transport-Security");
+                    record(host, path, "html_no_hsts", "HTML without Strict-Transport-Security");
                 }
             }
 
-            // Кандидат для ручной проверки, а не доказанная уязвимость.
+            // A candidate for manual review, not a proven vulnerability.
             if (response.statusCode() == 200
                     && "GET".equalsIgnoreCase(request.method())
                     && path.contains("/api/")
                     && !request.hasHeader("Cookie")
                     && !request.hasHeader("Authorization")) {
-                record(host, path, "api_200_without_credentials", "GET 200 без Cookie и Authorization: проверить вручную");
+                record(host, path, "api_200_without_credentials", "GET 200 without Cookie and Authorization: check by hand");
             }
         }
 
@@ -255,12 +255,12 @@ public class AgentFindings implements BurpExtension {
             }
         }
 
-        /** Ограничивает права на POSIX-системах; на других ОС молча пропускаем. */
+        /** Restricts permissions on POSIX systems; on other systems it is silently skipped. */
         private static void restrict(Path target, Set<PosixFilePermission> perms) {
             try {
                 Files.setPosixFilePermissions(target, perms);
             } catch (IOException | UnsupportedOperationException e) {
-                // Права не выставлены (не POSIX или нет доступа): файл остаётся с правами по умолчанию ОС.
+                // Permissions were not set (not POSIX or no access): the file keeps the OS default permissions.
             }
         }
 

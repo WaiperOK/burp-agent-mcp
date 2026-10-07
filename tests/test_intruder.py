@@ -1,6 +1,6 @@
-"""Тесты Intruder: отказы до первого запроса, потолки, остановки, отчёт без значений в аудите.
+"""Intruder tests: refusals before the first request, ceilings, stops, audit report without values.
 
-Запуск: python tests/test_intruder.py
+Run: python tests/test_intruder.py
 """
 
 import asyncio
@@ -46,7 +46,7 @@ class CheckTargetTests(unittest.TestCase):
             intruder.check_target(BASE, "path:2", ["1\n2"])
 
     def test_ok_target(self):
-        intruder.check_target(BASE, "path:2", ["101", "102"])  # не бросает
+        intruder.check_target(BASE, "path:2", ["101", "102"])  # does not raise
 
 
 class RunTests(unittest.IsolatedAsyncioTestCase):
@@ -57,7 +57,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         return gate
 
     async def test_interesting_rows_and_baseline(self):
-        # Записи 102 существует (200, длинное тело), остальные — 404.
+        # record 102 exists (200, long body), the others return 404.
         async def send(raw):
             if "/api/patients/102" in raw.split("\r\n")[0]:
                 return resp(200, "y" * 500)
@@ -71,7 +71,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["baseline"]["status"], "200")
         statuses = [r["status"] for r in out["rows"]]
         self.assertEqual(statuses, ["200", "404", "404"])
-        self.assertEqual([r["i"] for r in out["interesting"]], [1, 2])  # 404 отличается от baseline 200
+        self.assertEqual([r["i"] for r in out["interesting"]], [1, 2])  # 404 differs from the baseline 200
 
     async def test_stops_on_server_pushback(self):
         calls = []
@@ -100,7 +100,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
 
         async def send(raw):
             sent.append(raw)
-            state["deny"] = True  # после первого запроса гейт начинает отказывать
+            state["deny"] = True  # after the first request the gate starts refusing
             return resp(200)
 
         out = await intruder.run(BASE, "path:2", ["1", "2", "3"], send, self._gate(state), lambda e: None,
@@ -135,7 +135,7 @@ class TruncatedTests(unittest.IsolatedAsyncioTestCase):
     async def test_truncated_response_not_compared_by_length(self):
         async def send(raw):
             if raw.split("\r\n")[0].endswith("/103 HTTP/1.1"):
-                return resp(200, "z" * 50) + " (truncated)"  # Burp обрезал вывод
+                return resp(200, "z" * 50) + " (truncated)"  # Burp cut the output
             return resp(200, "y" * 500)
 
         out = await intruder.run(BASE, "path:2", ["101", "103"], send, lambda: None, lambda e: None,
@@ -143,7 +143,7 @@ class TruncatedTests(unittest.IsolatedAsyncioTestCase):
         row = out["rows"][1]
         self.assertTrue(row["truncated"])
         self.assertIsNone(row["length"])
-        self.assertEqual(out["interesting"], [])  # статус тот же, длину не сравниваем
+        self.assertEqual(out["interesting"], [])  # same status, the length is not compared
 
 
 if __name__ == "__main__":

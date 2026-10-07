@@ -1,7 +1,7 @@
-"""Тесты инструментов шлюза на подменённом upstream (история Burp не нужна).
+"""Tests for the gateway tools against a fake upstream (no Burp history needed).
 
-Upstream имитирует стенд: существуют только /api/patients/101 и /api/patients/102 (200), остальное 404.
-Запуск: python tests/test_tools.py
+The upstream imitates the target: only /api/patients/101 and /api/patients/102 exist (200), everything else is 404.
+Run: python tests/test_tools.py
 """
 
 import asyncio
@@ -95,7 +95,7 @@ async def fake_upstream(tool, arguments):
         off, cnt = arguments["offset"], arguments["count"]
         items = FAKE_HISTORY[off:off + cnt]
         return json.dumps(items) if items else "Reached end of items"
-    if tool == "get_proxy_http_history_regex":  # как в Burp: фильтр по тексту записи, offset — среди совпадений
+    if tool == "get_proxy_http_history_regex":  # as in Burp: filters by record text, offset counts matches
         rx = re.compile(arguments["regex"])
         matched = [it for it in FAKE_HISTORY if rx.search(it["request"] + "\n" + it["response"])]
         off, cnt = arguments["offset"], arguments["count"]
@@ -104,10 +104,10 @@ async def fake_upstream(tool, arguments):
     if tool == "send_http1_request":
         SENT.append(arguments)
         first = arguments["content"].split("\r\n")[0]
-        if "%27" in first:  # кавычка в пути: необработанная ошибка сервера
+        if "%27" in first:  # a quote in the path: an unhandled server error
             return resp(500, "text/plain", "internal error")
         echo = re.search(r"zq=([A-Za-z0-9]+)", first)
-        if echo:  # отражение параметра в ответе
+        if echo:  # a parameter reflected in the response
             return resp(200, "text/html", f"<p>value {echo.group(1)}</p>")
         if first.split(" ")[1].split("?")[0] in ("/api/patients/101", "/api/patients/102"):
             return resp(200, "application/json", '{"ok": true, "pad": "' + "y" * 400 + '"}')
@@ -220,7 +220,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         SENT.clear()
 
     async def test_replay_changes_path_header_and_drops_cookie(self):
-        out = await server.replay_variant(0, "IDOR: чужая запись 102", path="/api/patients/102",
+        out = await server.replay_variant(0, "IDOR: another user record 102", path="/api/patients/102",
                                           set_headers={"X-Test": "1"}, remove_headers=["Cookie"])
         self.assertEqual(out["status"], "200")
         content = SENT[-1]["content"]
@@ -243,7 +243,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_replay_body_recomputes_content_length(self):
         body = '{"patient": {"id": 102}}'
-        out = await server.replay_variant(4, "проверка владельца визита", body=body)
+        out = await server.replay_variant(4, "check the visit owner", body=body)
         self.assertNotIn("error", out)
         self.assertIn(f"Content-Length: {len(body)}", SENT[-1]["content"])
 
@@ -267,13 +267,13 @@ class IntruderTests(unittest.IsolatedAsyncioTestCase):
         SENT.clear()
 
     async def test_intruder_finds_existing_ids(self):
-        out = await server.intruder_run(0, "path:2", "IDOR: перебор id пациента",
+        out = await server.intruder_run(0, "path:2", "IDOR: enumerate patient ids",
                                         payloads=["102", "999", "103"], baseline=True)
         self.assertNotIn("error", out)
         self.assertEqual([r["status"] for r in out["rows"]], ["200", "404", "404"])
         self.assertEqual([r["i"] for r in out["interesting"]], [1, 2])
         self.assertEqual(out["baseline"]["status"], "200")
-        self.assertNotIn("pad", json.dumps(out))  # тела в ответе нет
+        self.assertNotIn("pad", json.dumps(out))  # no body in the response
 
     async def test_intruder_payload_file_from_payload_dir(self):
         out = await server.intruder_run(0, "path:2", "IDOR", payload_file="ids.txt")
@@ -308,7 +308,7 @@ class RepeaterTests(unittest.IsolatedAsyncioTestCase):
         out = await server.repeater_tab(0, "IDOR", tab_name="idor-102", path="/api/patients/102",
                                         set_headers={"X-Test": "1"})
         self.assertNotIn("error", out)
-        self.assertEqual(SENT, [])  # трафика к цели нет
+        self.assertEqual(SENT, [])  # no traffic to the target
         self.assertEqual(len(REPEATER), 1)
         self.assertEqual(REPEATER[0]["tabName"], "idor-102")
         self.assertTrue(REPEATER[0]["content"].startswith("GET /api/patients/102 HTTP/1.1"))
@@ -338,18 +338,18 @@ class PolicyIntegrityTests(unittest.IsolatedAsyncioTestCase):
         original = path.read_bytes()
         SENT.clear()
         try:
-            path.write_bytes(original + b"\n")  # правка файла после старта шлюза
+            path.write_bytes(original + b"\n")  # the file is edited after the gateway started
             out = await server.replay_variant(0, "x", path="/api/patients/102")
             self.assertIn("changed since the gateway started", out["error"])
             out = await server.intruder_run(0, "path:2", "x", payloads=["102"])
             self.assertIn("changed since the gateway started", out["error"])
             self.assertEqual(SENT, [])
-            status = await server.scope_status()  # чтение работает, но показывает состояние
+            status = await server.scope_status()  # reads still work, and they show the state
             self.assertEqual(status["mode"], "active")
         finally:
             path.write_bytes(original)
         out = await server.replay_variant(0, "x", path="/api/patients/102")
-        self.assertNotIn("error", out)  # после восстановления файла всё снова работает
+        self.assertNotIn("error", out)  # everything works again after the file is restored
 
 
 class FindingsTests(unittest.IsolatedAsyncioTestCase):
@@ -382,7 +382,7 @@ class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
         SENT.clear()
 
     async def test_request_url_in_scope_sends_and_builds_from_url(self):
-        out = await server.request_url("https://ehealth.test.local/api/patients/102?x=1", "проверка по URL",
+        out = await server.request_url("https://ehealth.test.local/api/patients/102?x=1", "check by URL",
                                        headers={"X-Test": "1"})
         self.assertNotIn("error", out)
         self.assertEqual(out["status"], "200")
@@ -392,7 +392,7 @@ class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_request_url_out_of_scope_denied(self):
         out = await server.request_url("https://evil.example/api/x", "x")
-        self.assertIn("not in", out["error"])  # хост вне authorized_hosts проверяется раньше URL
+        self.assertIn("not in", out["error"])  # the host outside authorized_hosts is checked before the URL
         self.assertEqual(SENT, [])
 
     async def test_request_url_traversal_denied(self):
@@ -407,7 +407,7 @@ class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
         original = server.POLICY
         server.POLICY = dataclasses.replace(original, scope_urls=("https://ehealth.test.local/api/patients/",))
         try:
-            out = await server.replay_variant(4, "x")  # POST /api/visits вне префикса scope_urls
+            out = await server.replay_variant(4, "x")  # POST /api/visits is outside the scope_urls prefix
             self.assertIn("not in scope", out["error"])
             self.assertEqual(SENT, [])
         finally:
@@ -420,7 +420,7 @@ class UrlScopeTests(unittest.IsolatedAsyncioTestCase):
             out = await server.request_url("https://ehealth.test.local/api/patients/102", "x")
             self.assertIn("environment", out["error"])
             self.assertEqual(SENT, [])
-            status = await server.scope_status()  # чтение остаётся доступным
+            status = await server.scope_status()  # reads stay available
             self.assertEqual(status["mode"], "active")
         finally:
             server.POLICY = original
@@ -447,29 +447,29 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(SENT, [])
 
     async def test_scan_finds_known_candidates_and_only_safe_methods(self):
-        out = await server.scan_start("тест сканера на известном стенде", source="history")
+        out = await server.scan_start("scanner test on a known stand", source="history")
         self.assertNotIn("error", out, out)
         status = await self._wait(out["job_id"])
         self.assertEqual(status["state"], "done", status)
         kinds = {(f["candidate"], f["url"].split("?")[0]) for f in status["findings"]}
         self.assertIn(("auth_not_enforced_candidate", "https://ehealth.test.local/api/patients/101"), kinds)
         self.assertIn(("server_error_on_malformed_input", "https://ehealth.test.local/api/patients/%27"), kinds)
-        self.assertIn(("neighbor_object_exists", "https://ehealth.test.local/api/patients/102"), kinds)  # соседний id
+        self.assertIn(("neighbor_object_exists", "https://ehealth.test.local/api/patients/102"), kinds)  # neighbouring id
         self.assertTrue(any(k == "reflected_input_candidate" for k, _ in kinds))
-        # только безопасные методы: ни одного POST на стенд
+        # only safe methods: not a single POST to the stand
         self.assertTrue(all(sent["content"].split(" ")[0] in ("GET", "HEAD", "OPTIONS") for sent in SENT))
         self.assertLessEqual(status["sent"], server.POLICY.scan_max_requests)
         findings_file = Path(TMP, "scan_findings.jsonl")
         self.assertTrue(findings_file.is_file())
-        self.assertEqual(oct(findings_file.stat().st_mode & 0o777), "0o600")  # находки — только владельцу
+        self.assertEqual(oct(findings_file.stat().st_mode & 0o777), "0o600")  # findings: owner only
 
     async def test_scan_respects_max_requests(self):
-        out = await server.scan_start("лимит", source="history", max_requests=3)
+        out = await server.scan_start("limit", source="history", max_requests=3)
         status = await self._wait(out["job_id"])
         self.assertLessEqual(status["sent"], 3)
 
     async def test_scan_stop_halts_job(self):
-        out = await server.scan_start("остановка", source="history")
+        out = await server.scan_start("stop", source="history")
         await server.scan_stop(out["job_id"])
         status = await self._wait(out["job_id"])
         self.assertIn(status["state"], ("stopped", "done"))

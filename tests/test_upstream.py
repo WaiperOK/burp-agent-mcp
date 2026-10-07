@@ -1,7 +1,7 @@
-"""Тесты клиента upstream: Burp недоступен и восстанавливается.
+"""Upstream client tests: Burp is unavailable and then recovers.
 
-Настоящий SSE-сервер MCP поднимается в потоке (uvicorn + FastMCP), его останавливают и запускают снова.
-Запуск: python tests/test_upstream.py
+A real MCP SSE server runs in a thread (uvicorn + FastMCP); it is stopped and started again.
+Run: python tests/test_upstream.py
 """
 
 import asyncio
@@ -37,7 +37,7 @@ def make_fake_burp():
 
 
 class FakeBurp:
-    """Фейковый Burp MCP по SSE, который можно остановить и поднять на том же порту."""
+    """Fake Burp MCP over SSE that can be stopped and started on the same port."""
 
     def __init__(self, port: int):
         self.port = port
@@ -82,20 +82,20 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
                              "Reached end of items")
             calls_before = client.calls
 
-            burp.stop()  # Burp упал
+            burp.stop()  # Burp went down
             with self.assertRaises(UpstreamError):
                 await client.call("get_proxy_http_history", {"count": 1, "offset": 0})
 
-            burp.start()  # Burp снова поднят на том же порту
+            burp.start()  # Burp is up again on the same port
             recovered = False
-            for _ in range(60):  # клиент сам переподключается с экспоненциальной паузой
+            for _ in range(60):  # the client reconnects by itself with exponential backoff
                 try:
                     out = await client.call("get_proxy_http_history", {"count": 1, "offset": 0})
                     recovered = out == "Reached end of items"
                     break
                 except UpstreamError:
                     await asyncio.sleep(0.5)
-            self.assertTrue(recovered, "клиент не восстановился после перезапуска Burp")
+            self.assertTrue(recovered, "client did not recover after Burp restarted")
             self.assertGreater(client.calls, calls_before)
         finally:
             await client.close()

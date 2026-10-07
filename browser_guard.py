@@ -1,11 +1,11 @@
-"""Браузер шлюза: Chromium через Playwright, весь трафик через прокси Burp.
+"""Gateway browser: Chromium via Playwright, all traffic goes through the Burp proxy.
 
-Гард: каждый HTTP-запрос и каждое WebSocket-соединение проверяются по authorized_hosts;
-чужие обрываются до отправки. Тяжёлые ресурсы (картинки, шрифты, медиа) режутся для скорости.
-Модель не заполняет пароли и поля с секретами (fill отклоняет их). Логин делает человек
-командой `login`: окно открывается с тем же профилем, закрывает его тоже человек.
+Guard: every HTTP request and every WebSocket connection is checked against authorized_hosts;
+requests to other hosts are cut before sending. Heavy resources (images, fonts, media) are cut for speed.
+The model never fills passwords or secret fields (fill refuses them). The person logs in with the
+`login` command: a window opens with the same profile, and the person closes it.
 
-Запуск ручного логина:
+Manual login:
   BURP_AGENT_POLICY=policy.json python browser_guard.py login https://app.example.test/
 """
 
@@ -48,7 +48,7 @@ class GuardedBrowser:
     def __init__(self, policy: Policy, headless: bool = True):
         self.policy = policy
         self.headless = headless
-        self.blocked: list[str] = []  # хосты, которые гард оборвал (последние 50)
+        self.blocked: list[str] = []  # hosts the guard cut (last 50)
         self.blocked_total = 0
         self.ws_guarded = False
         self._pw = None
@@ -56,19 +56,19 @@ class GuardedBrowser:
         self._page = None
         self._lock = asyncio.Lock()
 
-    # ----- жизненный цикл -----
+    # ----- lifecycle -----
 
     async def _ensure(self):
         if self._page is not None:
             return self._page
         profile = Path(self.policy.browser_profile_dir).expanduser()
         if (profile / "SingletonLock").exists():
-            raise BrowserError("профиль браузера занят: закройте окно ручного логина; "
-                               "если это остаток сбоя, удалите SingletonLock в каталоге профиля")
+            raise BrowserError("browser profile is busy: close the manual login window; "
+                               "if this is a leftover from a crash, delete SingletonLock in the profile directory")
         try:
             from playwright.async_api import async_playwright
         except ImportError as ex:
-            raise BrowserError("playwright не установлен: pip install playwright && playwright install chromium") from ex
+            raise BrowserError("playwright is not installed: pip install playwright && playwright install chromium") from ex
         try:
             self._pw = await async_playwright().start()
             opts = {"headless": self.headless, "ignore_https_errors": True}
@@ -95,7 +95,7 @@ class GuardedBrowser:
             await self._pw.stop()
         self._ctx = self._pw = self._page = None
 
-    # ----- гард -----
+    # ----- guard -----
 
     def _note_blocked(self, host: str) -> None:
         self.blocked = (self.blocked + [host])[-50:]
@@ -104,7 +104,7 @@ class GuardedBrowser:
     async def _guard(self, route):
         req = route.request
         host = _host(req.url)
-        # навигация проверяется по URL (scope_urls), ресурсы страницы — по хосту
+        # navigation is checked by URL (scope_urls), page resources by host
         out_of_scope = not self.policy.host_in_scope(host) or (
             req.resource_type == "document" and not self.policy.url_in_scope(req.url))
         if out_of_scope:
@@ -112,7 +112,7 @@ class GuardedBrowser:
             await route.abort("blockedbyclient")
             return
         if self.policy.block_heavy_resources and req.resource_type in HEAVY_RESOURCES:
-            await route.abort("blockedbyclient")  # экономия времени; в scope-блокировки не считаем
+            await route.abort("blockedbyclient")  # saves time; not counted as a scope block
             return
         await route.continue_()
 
@@ -124,7 +124,7 @@ class GuardedBrowser:
             self._note_blocked(host)
             await ws.close()
 
-    # ----- действия -----
+    # ----- actions -----
 
     async def _act(self, fn):
         async with self._lock:
@@ -136,7 +136,7 @@ class GuardedBrowser:
                 raise
             except Exception as ex:
                 new = self.blocked_total - start
-                note = f"; заблокированы хосты: {', '.join(self.blocked[-new:])}" if new else ""
+                note = f"; blocked hosts: {', '.join(self.blocked[-new:])}" if new else ""
                 raise BrowserError(f"{type(ex).__name__}: {str(ex)[:300]}{note}") from None
             new = self.blocked_total - start
             result["blocked"] = self.blocked[-new:] if new else []
@@ -230,7 +230,7 @@ class GuardedBrowser:
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3000)
             except Exception:
-                pass  # нажатие могло не вызвать навигацию
+                pass  # the key press may not have triggered navigation
             return {"url": page.url, "host": _host(page.url), "key": key}
         return await self._act(fn)
 
@@ -261,10 +261,10 @@ class GuardedBrowser:
 
 
 async def _manual_login(url: str) -> None:
-    """Видимое окно с тем же профилем. Логин вводит человек, окно закрывает человек."""
+    """Visible window with the same profile. The person logs in and the person closes the window."""
     policy_path = os.environ.get("BURP_AGENT_POLICY")
     if not policy_path:
-        sys.exit("BURP_AGENT_POLICY не задан")
+        sys.exit("BURP_AGENT_POLICY is not set")
     policy = Policy.load(policy_path)
     if not policy.host_in_scope(_host(url)):
         sys.exit(f"host is not in authorized scope: {_host(url)}")
@@ -279,7 +279,7 @@ async def _manual_login(url: str) -> None:
         ctx = await pw.chromium.launch_persistent_context(profile, **opts)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto(url)
-        print("Войдите в приложение вручную и закройте окно браузера.")
+        print("Log in to the application by hand, then close the browser window.")
         await ctx.wait_for_event("close", timeout=0)
 
 

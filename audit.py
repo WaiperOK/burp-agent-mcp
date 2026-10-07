@@ -1,7 +1,7 @@
-"""Append-only аудит-лог в JSONL с хеш-цепочкой (sha256).
+"""Append-only audit log in JSONL with a hash chain (sha256).
 
-Каждая запись содержит хеш предыдущей, поэтому удаление или правка
-записи в середине файла обнаруживается командой `python audit.py verify`.
+Each record contains the hash of the previous one, so deleting or editing
+a record in the middle of the file is detected by `python audit.py verify`.
 """
 
 import hashlib
@@ -59,7 +59,7 @@ class AuditLog:
 
 
 def verify(path: str) -> tuple[bool, str]:
-    """Проверяет целостность цепочки. Возвращает (ok, сообщение)."""
+    """Checks the integrity of the chain. Returns (ok, message)."""
     prev = GENESIS
     count = 0
     with Path(path).expanduser().open(encoding="utf-8") as fh:

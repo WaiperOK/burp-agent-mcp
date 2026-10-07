@@ -1,8 +1,8 @@
-"""Постоянное соединение с официальным Burp MCP Server (SSE).
+"""Persistent connection to the official Burp MCP Server (SSE).
 
-Раньше каждый вызов открывал новую SSE-сессию (~17 мс). Здесь одна сессия живёт в фоновой задаче,
-вызовы идут через очередь (~2 мс). Фоновая задача владеет контекстами anyio целиком: их нельзя
-открывать и закрывать из разных задач. Соединение восстанавливается с экспоненциальной паузой.
+Previously every call opened a new SSE session (about 17 ms). Here one session lives in a background task,
+and calls go through a queue (about 2 ms). The background task owns the anyio contexts entirely: they cannot be
+opened and closed from different tasks. The connection is re-established with exponential backoff.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ class UpstreamClient:
         self._task: asyncio.Task | None = None
         self._connected = asyncio.Event()
         self._last_error = ""
-        self.calls = 0  # для отладки и замеров
+        self.calls = 0  # for debugging and measurements
 
     def _ensure_task(self) -> None:
         if self._task is None or self._task.done():
@@ -66,13 +66,13 @@ class UpstreamClient:
                         backoff = 0.5
                         while True:
                             tool, arguments, fut = await self._queue.get()
-                            if fut.done():  # вызывающий уже ушёл по таймауту
+                            if fut.done():  # the caller has already left on timeout
                                 continue
                             try:
-                                # таймаут и здесь: зависший Burp не должен заблокировать очередь навсегда
+                                # a timeout here too: a hung Burp must not block the queue forever
                                 result = await asyncio.wait_for(
                                     session.call_tool(tool, arguments), self.call_timeout)
-                            except BaseException as ex:  # соединение могло оборваться или зависнуть
+                            except BaseException as ex:  # the connection may drop or hang
                                 if isinstance(ex, asyncio.CancelledError):
                                     raise
                                 if not fut.done():
@@ -88,7 +88,7 @@ class UpstreamClient:
             except asyncio.CancelledError:
                 self._fail_pending("client closed")
                 raise
-            except BaseException as ex:  # переподключение; BaseExceptionGroup — от anyio
+            except BaseException as ex:  # reconnect; BaseExceptionGroup comes from anyio
                 reason = ex.exceptions[0] if isinstance(ex, BaseExceptionGroup) and ex.exceptions else ex
                 self._last_error = str(reason)[:200]
                 self._connected.clear()

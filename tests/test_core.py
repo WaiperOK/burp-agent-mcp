@@ -1,4 +1,4 @@
-"""Тесты защитных механизмов: политика, гейт, редакция, аудит. Запуск: python tests/test_core.py"""
+"""Tests for the security mechanisms: policy, gate, redaction, audit. Run: python tests/test_core.py"""
 
 import json
 import sys
@@ -65,7 +65,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_wildcard_matches_subdomain_only(self):
         self.assertTrue(self.policy.host_in_scope("api.lab.test"))
-        # Суффикс без точки не должен считаться поддоменом: evillab.test — чужой хост.
+        # A suffix without a dot must not count as a subdomain: evillab.test is a foreign host.
         self.assertFalse(self.policy.host_in_scope("evillab.test"))
         self.assertFalse(self.policy.host_in_scope("lab.test.evil.com"))
 
@@ -105,7 +105,7 @@ class GateTests(unittest.TestCase):
         gate.check_active("app.lab.test", "GET")
         with self.assertRaises(PolicyError):
             gate.check_active("app.lab.test", "GET")
-        self.clock[0] = 61.0  # окно в 60 секунд прошло
+        self.clock[0] = 61.0  # the 60-second window has passed
         gate.check_active("app.lab.test", "GET")
 
     def test_session_total_limit(self):

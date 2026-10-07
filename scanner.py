@@ -1,14 +1,14 @@
-"""Сканер по URL в scope: несколько проверок на эндпоинт, все запросы идут через Burp и гейт шлюза.
+"""URL scanner: several checks per endpoint; all requests go through Burp and the gateway gate.
 
-Только идемпотентные методы (GET, HEAD, OPTIONS): сканер ничего не записывает на стенд.
-Проверки:
-  baseline   — исходный запрос; анонимный доступ к эндпоинту без авторизации (кандидат)
-  auth       — тот же запрос без Cookie/Authorization: 200 с телом => авторизация не проверяется (кандидат)
-  ids        — соседние числовые id (N-1, N+1): 200 => объекты перебираются (кандидат для IDOR, проверить вручную)
-  malformed  — кавычка вместо числового id: 5xx => необработанная ошибка (кандидат)
-  reflect    — уникальная метка в query-параметре: отражение в ответе => отражённый ввод (кандидат)
+Only idempotent methods (GET, HEAD, OPTIONS): the scanner never writes to the target.
+Checks:
+  baseline   - the original request; anonymous access to the endpoint without authorization (candidate)
+  auth       - the same request without Cookie/Authorization: 200 with a body means authorization is not enforced (candidate)
+  ids        - neighbouring numeric ids (N-1, N+1): 200 means objects can be enumerated (candidate for IDOR, verify by hand)
+  malformed  - a quote instead of a numeric id: 5xx means an unhandled error (candidate)
+  reflect    - a unique marker in a query parameter: reflected in the response means reflected input (candidate)
 
-Все находки — кандидаты для ручной проверки, не подтверждённые уязвимости. Тела ответов не возвращаются.
+Every finding is a candidate for manual review, not a confirmed vulnerability. Response bodies are not returned.
 """
 
 import asyncio
@@ -40,8 +40,8 @@ class Endpoint:
     host: str
     port: int
     use_https: bool
-    path: str  # путь с query
-    raw: str  # исходный сырой запрос
+    path: str  # path with query
+    raw: str  # original raw request
     has_auth: bool
     source: str  # history | openapi
 
@@ -66,7 +66,7 @@ class Probe:
 
 
 def endpoint_from_raw(raw: str, source: str) -> Endpoint:
-    """Эндпоинт из записи history. Порт и схема в history не хранятся: берём из Host, по умолчанию https/443."""
+    """Endpoint from a history record. Port and scheme are not stored in history: taken from Host, default https/443."""
     method, path = httpmsg.split_request(raw)
     if method not in SAFE_METHODS:
         raise MsgError(f"scanner sends only {SAFE_METHODS}, got {method}")
@@ -88,7 +88,7 @@ def endpoint_from_url(url: str, method: str = "GET") -> Endpoint:
 
 
 def _numeric_segment(path: str) -> tuple[int, int] | None:
-    """Индекс и значение первого числового сегмента пути (индекс 0-based, без query)."""
+    """Index and value of the first numeric path segment (0-based index, no query)."""
     segments = path.split("?", 1)[0].split("/")[1:]
     for i, seg in enumerate(segments):
         if seg.isdigit():
@@ -109,10 +109,10 @@ def _with_query(raw: str, marker: str) -> str:
 
 
 def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
-    """Все пробы одного эндпоинта: baseline и его проверки."""
+    """All probes of one endpoint: the baseline and its checks."""
     out = [Probe("baseline", ep, ep.raw)]
     if "auth" in checks and ep.has_auth:
-        out.append(Probe("auth", ep, _strip_auth(ep.raw), note="без Cookie/Authorization"))
+        out.append(Probe("auth", ep, _strip_auth(ep.raw), note="without Cookie/Authorization"))
     seg = _numeric_segment(ep.path)
     if "ids" in checks and seg is not None:
         idx, n = seg
@@ -122,7 +122,7 @@ def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
                                  note=f"id {n}->{n + delta}"))
     if "malformed" in checks and seg is not None:
         out.append(Probe("malformed", ep, httpmsg.apply_position(ep.raw, f"path:{seg[0]}", "'"),
-                         note="кавычка вместо id"))
+                         note="quote instead of id"))
     if "reflect" in checks:
         marker = "zq" + secrets.token_hex(4)
         out.append(Probe("reflect", ep, _with_query(ep.raw, marker), marker=marker))
@@ -130,9 +130,9 @@ def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
 
 
 def build_probes(endpoints: list[Endpoint], checks: tuple, max_requests: int) -> list[Probe]:
-    """Бюджет режет по эндпоинтам целиком: эндпоинт либо проверяется полностью, либо не входит в запуск.
+    """Budget cuts by whole endpoints: an endpoint is either fully checked or not part of the run at all.
 
-    Если даже первый эндпоинт не влезает, он обрезается по пробам (baseline останется первым).
+    If even the first endpoint does not fit, it is truncated by probes (the baseline stays first).
     """
     unknown = set(checks) - set(CHECKS)
     if unknown:
@@ -172,7 +172,7 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
 
 
 def judge(probe: Probe, status: str | None, length: int, text: str, base: dict | None) -> dict | None:
-    """Решает, есть ли кандидат. base — результат baseline для того же эндпоинта."""
+    """Decides whether there is a candidate. base is the baseline result for the same endpoint."""
     ep = probe.endpoint
     if probe.check == "baseline":
         if not ep.has_auth and status == "200" and length > 0:
@@ -197,9 +197,9 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
 
 async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float, max_seconds: float,
               should_stop, result: dict) -> dict:
-    """Последовательный запуск. send(probe) -> ответ; gate_wait(endpoint) ждёт окно гейта или бросает исключение.
+    """Sequential run. send(probe) -> response; gate_wait(endpoint) waits for the gate window or raises.
 
-    result — словарь, который обновляется по ходу работы (статус задания виден во время запуска).
+    result is a dict that is updated during the run (the job status is visible while it runs).
     """
     result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {}})
     started = time.monotonic()
@@ -213,7 +213,7 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
             break
         try:
             await gate_wait(probe.endpoint)
-        except Exception as ex:  # режим, scope, лимит общего числа — останавливаем целиком
+        except Exception as ex:  # mode, scope and the total limit: stop the whole run
             result["stopped"] = f"gate: {str(ex)[:200]}"
             break
         t0 = time.perf_counter()
