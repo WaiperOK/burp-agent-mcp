@@ -34,6 +34,7 @@ from mcp.server.fastmcp import FastMCP
 
 import httpmsg
 import intruder as intruder_mod
+import plugins
 import scanner
 from audit import AuditLog
 from browser_guard import BrowserError, GuardedBrowser
@@ -1325,6 +1326,76 @@ async def scan_stop(job_id: str) -> dict:
     job["stop_requested"] = True
     AUDIT.record("scan_stop", "allow", {"job_id": job_id})
     return {"job_id": job_id, "stop_requested": True, "state": job["state"]}
+
+
+# ---------- Burp extensions written by the model (see plugins.py) ----------
+# Nothing here loads a plugin into Burp. A person adds the jar in Burp: Extensions, Installed, Add, Java.
+
+BURP_JAR = Path(os.environ.get("BURP_JAR", "/Applications/Burp Suite.app/Contents/Resources/app/burpsuite.jar"))
+
+
+def _plugins_root() -> Path:
+    """Folder with plugin sources and jars, next to the findings file."""
+    return Path(POLICY.findings_file).expanduser().parent / "plugins"
+
+
+@mcp.tool()
+async def plugin_write(name: str, source: str, reason: str) -> dict:
+    """WRITE a Burp extension's Java source (no traffic; nothing is loaded into Burp).
+
+    name: 3-40 characters, lower-case letters, digits, underscore. source: one file with
+    `public class Plugin implements BurpExtension` and `initialize(MontoyaApi api)`, in the default package.
+    Refused: starting processes, raw sockets, dynamic class loading. Reported for review: file and environment use.
+    Rewriting a plugin deletes its compiled jar. reason is required. Next step: plugin_compile.
+    """
+    args = {"name": name[:60], "reason": reason[:300], "source_chars": len(source)}
+    if not reason.strip():
+        AUDIT.record("plugin_write", "deny", args, error="reason is required")
+        return {"error": "reason is required"}
+    try:
+        out = plugins.write_source(_plugins_root(), name, source)
+    except ValueError as ex:
+        AUDIT.record("plugin_write", "deny", args, error=str(ex)[:300])
+        return {"error": str(ex)[:300]}
+    if "error" in out:
+        AUDIT.record("plugin_write", "deny", args, error=out["error"][:300])
+        return out
+    AUDIT.record("plugin_write", "allow", args,
+                 summary={"source_sha256": out["source_sha256"], "warnings": len(out["warnings"])})
+    return _envelope(out)
+
+
+@mcp.tool()
+async def plugin_compile(name: str, reason: str) -> dict:
+    """COMPILE a plugin written with plugin_write into <name>.jar (no traffic; the plugin is not run).
+
+    Built against BURP_JAR. The result has the source and jar hashes and review warnings. A person then adds the
+    jar in Burp: Extensions, Installed, Add, Java. reason is required.
+    """
+    args = {"name": name[:60], "reason": reason[:300]}
+    if not reason.strip():
+        AUDIT.record("plugin_compile", "deny", args, error="reason is required")
+        return {"error": "reason is required"}
+    try:
+        out = await asyncio.to_thread(plugins.compile_plugin, _plugins_root(), name, BURP_JAR)
+    except ValueError as ex:
+        AUDIT.record("plugin_compile", "deny", args, error=str(ex)[:300])
+        return {"error": str(ex)[:300]}
+    if "error" in out:
+        AUDIT.record("plugin_compile", "deny", args, error=out["error"][:300])
+        return out
+    AUDIT.record("plugin_compile", "allow", args,
+                 summary={"jar_sha256": out["jar_sha256"], "warnings": len(out["warnings"])})
+    out["next_step"] = "Read the source first. Then in Burp: Extensions, Installed, Add, Java, and choose the jar."
+    return _envelope(out)
+
+
+@mcp.tool()
+async def plugin_list() -> dict:
+    """Plugins written so far, read-only: source present, jar built, and whether the jar matches the current source."""
+    items = plugins.list_plugins(_plugins_root())
+    AUDIT.record("plugin_list", "allow", {}, summary={"plugins": len(items)})
+    return _envelope({"plugins": items})
 
 
 if __name__ == "__main__":

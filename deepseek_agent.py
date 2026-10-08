@@ -28,6 +28,7 @@ MAX_TOOL_CHARS = 30000
 CONFIRM_TOOLS = {
     "send_request", "replay_variant", "intruder_run", "request_url", "scan_start",
     "browser_open", "browser_click", "browser_fill", "browser_press", "browser_back", "browser_reload",
+    "plugin_write", "plugin_compile",  # the operator reads the source the model writes before anything is built
 }
 
 SYSTEM_PROMPT = """You help with authorized testing of web applications through Burp Suite.

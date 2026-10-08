@@ -64,7 +64,7 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_harness_receives_exactly_the_documented_tools(self):
         documented = set().union(*documented_tools().values())
         names = {t.name for t in self.tools}
-        self.assertEqual(len(self.tools), 31)
+        self.assertEqual(len(self.tools), 34)
         self.assertEqual(names, documented, f"server only: {sorted(names - documented)}, "
                                             f"README only: {sorted(documented - names)}")
 

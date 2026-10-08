@@ -65,13 +65,13 @@ Every active action passes through the same layers. A layer that says no stops t
 
 ## Tools
 
-31 tools in three groups. Read-only tools never send traffic to a target.
+34 tools in three groups. Read-only tools never send traffic to a target.
 
 | Group | Tools |
 |---|---|
-| **Read-only** | `scope_status` · `search_proxy_history` · `list_endpoints` · `get_history_item` · `search_bundles` · `openapi_coverage` · `diff_responses` · `scanner_issues` · `read_passive_findings` · `read_universal_report` · `scan_plan` · `scan_status` |
+| **Read-only** | `scope_status` · `search_proxy_history` · `list_endpoints` · `get_history_item` · `search_bundles` · `openapi_coverage` · `diff_responses` · `scanner_issues` · `read_passive_findings` · `read_universal_report` · `scan_plan` · `scan_status` · `plugin_list` |
 | **Browser, read-only** | `browser_state` · `browser_text` · `browser_links` · `browser_forms` · `browser_wait` · `browser_screenshot` |
-| **No traffic to target** | `repeater_tab` creates a tab in Burp Repeater for a person to send by hand · `scan_stop` |
+| **No traffic to target** | `repeater_tab` creates a tab in Burp Repeater for a person to send by hand · `scan_stop` · `plugin_write` writes a Burp extension's source · `plugin_compile` builds its jar |
 | **Active** (`mode=active`, `environment` set) | `request_url` · `send_request` · `replay_variant` · `intruder_run` · `scan_start` · `browser_open` · `browser_click` · `browser_fill` · `browser_press` · `browser_back` · `browser_reload` |
 
 `request_url` takes `dry_run=true` to preview the exact request without sending it or spending budget.
@@ -190,13 +190,24 @@ javac -cp "/path/to/burpsuite.jar" -d build burp-extension/AgentFindings.java
 
 The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`, one per line.
 
+### Plugins written by the model
+
+`plugin_write` saves a Burp extension's Java source in a `plugins` folder next to the findings file. `plugin_compile` builds it into `<name>.jar`. The gateway never loads a plugin: you add the jar yourself in Burp (**Extensions → Installed → Add → Java**).
+
+- Compiling runs `javac` and `jar` with fixed arguments and never runs the plugin's code.
+- Refused: starting processes, raw sockets, dynamic class loading, `System.exit`. Reported for review: file and environment access.
+- Each jar records the hash of the source it was built from. Editing the source makes the jar stale.
+- The Burp jar is found through `BURP_JAR`, by default the macOS path of `burpsuite.jar`.
+
+These checks are a review aid, not a sandbox. Read the source before you load the jar.
+
 ## Testing
 
 ```bash
 ./run_tests.sh
 ```
 
-182 tests across twelve suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+210 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

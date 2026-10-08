@@ -646,5 +646,32 @@ class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.HISTORY.entries, [])  # and the index starts over
 
 
+class PluginToolTests(unittest.IsolatedAsyncioTestCase):
+    SOURCE = ("import burp.api.montoya.BurpExtension;\nimport burp.api.montoya.MontoyaApi;\n"
+              "public class Plugin implements BurpExtension {\n"
+              "    public void initialize(MontoyaApi api) {}\n}\n")
+
+    async def test_write_needs_a_reason_and_refuses_path_names(self):
+        self.assertIn("reason is required", (await server.plugin_write("tool_plugin", self.SOURCE, " "))["error"])
+        self.assertIn("error", await server.plugin_write("../escape", self.SOURCE, "test"))
+
+    async def test_write_then_list_shows_source_but_no_jar(self):
+        out = await server.plugin_write("tool_plugin", self.SOURCE, "header check for the stand")
+        self.assertNotIn("error", out)
+        listed = {p["name"]: p for p in (await server.plugin_list())["plugins"]}
+        self.assertTrue(listed["tool_plugin"]["source"])
+        self.assertFalse(listed["tool_plugin"]["compiled"])
+
+    async def test_compile_without_burp_jar_says_what_to_set(self):
+        await server.plugin_write("tool_plugin", self.SOURCE, "header check for the stand")
+        original = server.BURP_JAR
+        server.BURP_JAR = Path(TMP, "no-such-burpsuite.jar")
+        try:
+            out = await server.plugin_compile("tool_plugin", "build it")
+        finally:
+            server.BURP_JAR = original
+        self.assertIn("BURP_JAR", out["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
