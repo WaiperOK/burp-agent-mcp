@@ -179,6 +179,8 @@ To scan as a signed-in user, run `python browser_guard.py login <url>` once and 
 
 Each candidate from a GET request is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet. Candidates from POST requests are not repeated, because a second POST would change data on the target again. `scan_status` also returns `groups`: the same problem on one path as one row, with a count.
 
+If the signed-in requests come back 401 most of the time, the saved session has expired. The run stops with that reason instead of running every check against a logged-out session. `scan_status` shows the counts under `session`.
+
 Requests are limited by `scan_max_requests` and paced by `scan_min_delay_ms`. The scanner stops on 429 or 503, after a series of errors, or when asked. Findings go to `scan_findings.jsonl` with owner-only permissions.
 
 ## Burp extension
@@ -213,7 +215,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-249 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+251 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

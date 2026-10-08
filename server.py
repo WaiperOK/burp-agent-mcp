@@ -1359,6 +1359,7 @@ async def scan_status(job_id: str) -> dict:
         "elapsed_s": round(time.time() - job["started"]),
         "stopped": res["stopped"],
         "groups": scanner.group_findings(res["findings"]),  # the same problem on one path is one row
+        "session": res.get("session", {}),  # signed-in requests seen and refused (401): an expired login shows here
         "findings": res["findings"][-100:],
         "findings_total": len(res["findings"]),
     })

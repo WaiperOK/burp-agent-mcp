@@ -365,5 +365,36 @@ class FormAndNestedBodyTests(unittest.TestCase):
         self.assertEqual(len(probes), 2 * scanner.MAX_POST_FIELDS)
 
 
+class SessionCheckTests(unittest.IsolatedAsyncioTestCase):
+    """An expired login makes every signed-in request fail with 401. The run must stop and say why."""
+
+    def _endpoints(self, n: int) -> list:
+        return [scanner.endpoint_from_raw(f"GET /api/item/{i} HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n",
+                                          "history") for i in range(n)]
+
+    async def _run(self, status: str) -> dict:
+        probes = scanner.build_probes(self._endpoints(10), ("auth",), 100)
+
+        async def send(probe):
+            return f"HTTP/1.1 {status} X\r\n\r\nbody"
+
+        async def gate_wait(endpoint):
+            return None
+
+        return await scanner.run(probes, send, gate_wait, lambda e: None, min_delay_s=0, max_seconds=30,
+                                 should_stop=lambda: False, result={})
+
+    async def test_expired_session_stops_the_run_with_a_reason(self):
+        out = await self._run("401")
+        self.assertTrue(out["stopped"].startswith("session looks expired"), out["stopped"])
+        self.assertEqual(out["session"]["refused"], scanner.SESSION_MIN_SAMPLE)
+        self.assertLess(out["sent"], 10)  # stopped early, not after every probe
+
+    async def test_working_session_is_not_stopped(self):
+        out = await self._run("200")
+        self.assertIsNone(out["stopped"])
+        self.assertEqual(out["session"], {"signed_in": 10, "refused": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

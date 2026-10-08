@@ -34,6 +34,10 @@ from redact import mask_query
 CHECKS = ("auth", "ids", "malformed", "reflect", "params", "post")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 PUSHBACK = (429, 503)
+# If the signed-in requests are refused (401) almost every time, the saved session has expired: stop, do not
+# run the rest of the checks, and say so. Checked after at least SESSION_MIN_SAMPLE signed-in baselines.
+SESSION_MIN_SAMPLE = 3
+SESSION_REFUSED_SHARE = 0.8
 # Candidates from these checks are sent once more to see whether they reproduce.
 REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect", "params_quote", "params_bool")
 # A POST probe changes data on the target, so its candidates are never sent a second time automatically.
@@ -462,7 +466,8 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
     on_finding(finding), if given, is called as soon as a candidate is found, so nothing is lost on a crash.
     max_requests caps probes plus repeats; repeats never take budget from probes that are still to come.
     """
-    result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {}})
+    result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {},
+                   "session": {"signed_in": 0, "refused": 0}})
     started = time.monotonic()
     consecutive_errors = 0
     for index, probe in enumerate(probes):
@@ -500,6 +505,16 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
         if status and int(status) in PUSHBACK:
             result["stopped"] = f"server pushback {status}: stopped to avoid load on the target"
             break
+        if probe.check == "baseline" and probe.endpoint.has_auth:
+            session = result["session"]
+            session["signed_in"] += 1
+            if status == "401":
+                session["refused"] += 1
+            if session["signed_in"] >= SESSION_MIN_SAMPLE and \
+                    session["refused"] >= SESSION_REFUSED_SHARE * session["signed_in"]:
+                result["stopped"] = ("session looks expired: signed-in requests get 401. "
+                                     "Sign in again with browser_guard.py login, then scan again")
+                break
         if probe.check == "baseline":
             result["baseline"][probe.endpoint.key] = {"status": status, "length": length}
         base = result["baseline"].get(probe.endpoint.key)
