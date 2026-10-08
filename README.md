@@ -65,14 +65,14 @@ Every active action passes through the same layers. A layer that says no stops t
 
 ## Tools
 
-34 tools in three groups. Read-only tools never send traffic to a target.
+35 tools in three groups. Read-only tools never send traffic to a target.
 
 | Group | Tools |
 |---|---|
 | **Read-only** | `scope_status` · `search_proxy_history` · `list_endpoints` · `get_history_item` · `search_bundles` · `openapi_coverage` · `diff_responses` · `scanner_issues` · `read_passive_findings` · `read_universal_report` · `scan_plan` · `scan_status` · `plugin_list` |
 | **Browser, read-only** | `browser_state` · `browser_text` · `browser_links` · `browser_forms` · `browser_wait` · `browser_screenshot` |
 | **No traffic to target** | `repeater_tab` creates a tab in Burp Repeater for a person to send by hand · `scan_stop` · `plugin_write` writes a Burp extension's source · `plugin_compile` builds its jar |
-| **Active** (`mode=active`, `environment` set) | `request_url` · `send_request` · `replay_variant` · `intruder_run` · `scan_start` · `browser_open` · `browser_click` · `browser_fill` · `browser_press` · `browser_back` · `browser_reload` |
+| **Active** (`mode=active`, `environment` set) | `request_url` · `send_request` · `replay_variant` · `intruder_run` · `scan_start` · `browser_open` · `browser_click` · `browser_fill` · `browser_press` · `browser_back` · `browser_reload` · `login_local` |
 
 `request_url` takes `dry_run=true` to preview the exact request without sending it or spending budget.
 
@@ -175,9 +175,9 @@ The scanner runs the checks below. Each one produces a *candidate* for manual re
 
 The `post` check sends POST requests, so it needs `POST` in the policy's `allowed_methods` and the check named in the scan. Login, registration, password and token endpoints are never probed, and a body with a password, token or other credential-like field is never sent again, because the recorded secret would go back to the target. JSON bodies are probed at any depth, and form bodies (`application/x-www-form-urlencoded`) field by field. At most 20 fields per endpoint. Credential-like parameter names (`token`, `password`, `key` and similar) are not varied.
 
-To scan as a signed-in user, run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. The gateway never types passwords. Requests recorded from that session carry the login, and the authorization probes use them.
+To scan as a signed-in user there are two ways. Either run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. Or set `BURP_AGENT_LOGIN_EMAIL` and `BURP_AGENT_LOGIN_PASSWORD` in the gateway's environment and call `login_local` with the login page. `login_local` only works on local test hosts (`127.0.0.1`, `localhost`, `*.localhost`, `*.test`) inside the scope, in active mode, with POST allowed. The browser types the password; it is never returned, logged or shown to the model, and each sign-in is confirmed by the operator. Requests recorded from a signed-in session carry the login, and the authorization probes use them.
 
-Each candidate from a GET request is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet. Candidates from POST requests are not repeated, because a second POST would change data on the target again. `scan_status` also returns `groups`: the same problem on one path as one row, with a count.
+A candidate for an object that belongs to another user (the owner id in the answer differs from the signed-in request's) is marked `other_owner_object_candidate` with high severity. Every finding carries `evidence`: a short piece of the answer around the match, with secrets masked. Job summaries are kept in `scan_jobs.json` next to the findings, so `scan_status` still works after a restart. Each candidate from a GET request is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet. Candidates from POST requests are not repeated, because a second POST would change data on the target again. `scan_status` also returns `groups`: the same problem on one path as one row, with a count.
 
 If the signed-in requests come back 401 most of the time, the saved session has expired. The run stops with that reason instead of running every check against a logged-out session. `scan_status` shows the counts under `session`.
 
@@ -215,7 +215,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-254 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+267 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

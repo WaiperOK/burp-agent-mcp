@@ -417,5 +417,48 @@ class EmptyAnswerTests(unittest.TestCase):
                          "auth_not_enforced_candidate")
 
 
+class FindingDetailTests(unittest.TestCase):
+    """Evidence in findings, owner comparison for object access, and 5xx on POST probes."""
+
+    def _ep(self, path: str, method: str = "GET"):
+        return scanner.endpoint_from_raw(f"{method} {path} HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n", "history")
+
+    def test_evidence_is_short_and_masked(self):
+        ep = self._ep("/api/x")
+        probe = scanner.Probe("auth", ep, ep.raw)
+        text = '{"user": {"id": 1}, "note": "token=supersecret12 ' + "x" * 400 + '"}'
+        out = scanner.judge(probe, "200", len(text), text, {"status": "200", "length": 9})
+        self.assertLessEqual(len(out["evidence"]), scanner.EVIDENCE_CHARS)
+        self.assertNotIn("supersecret12", out["evidence"])
+
+    def test_other_owner_object_is_high_severity(self):
+        ep = self._ep("/rest/basket/1")
+        probe = scanner.build_probes([ep], ("ids",), 50)
+        probe = next(p for p in probe if p.check == "ids")
+        base = {"status": "200", "length": 40, "owner": "1"}
+        out = scanner.judge(probe, "200", 60, '{"status":"success","data":{"UserId":2,"Products":[]}}', base)
+        self.assertEqual(out["candidate"], "other_owner_object_candidate")
+        self.assertEqual(out["hint"], "high")
+
+    def test_same_owner_stays_a_low_neighbour_finding(self):
+        ep = self._ep("/rest/basket/1")
+        probe = next(p for p in scanner.build_probes([ep], ("ids",), 50) if p.check == "ids")
+        base = {"status": "200", "length": 40, "owner": "1"}
+        out = scanner.judge(probe, "200", 60, '{"data":{"UserId":1}}', base)
+        self.assertEqual(out["candidate"], "neighbor_object_exists")
+
+    def test_owner_is_found_inside_nested_data(self):
+        self.assertEqual(scanner._owner('{"status":"success","data":{"UserId":7}}'), "7")
+        self.assertIsNone(scanner._owner('{"user":{}}'))
+
+    def test_server_error_on_a_harmless_post_value_is_a_candidate(self):
+        ep = scanner.endpoint_from_raw(
+            f"POST /api/BasketItems HTTP/1.1\r\nHost: {HOST}\r\nContent-Type: application/json\r\n\r\n"
+            '{"BasketId": "1"}', "history", scanner.SAFE_METHODS + ("POST",))
+        probe = next(p for p in scanner.build_probes([ep], ("post",), 50) if p.check == "post_reflect")
+        out = scanner.judge(probe, "500", 30, "Internal Server Error", None)
+        self.assertEqual(out["candidate"], "server_error_on_malformed_input")
+
+
 if __name__ == "__main__":
     unittest.main()

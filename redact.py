@@ -26,6 +26,17 @@ _QUERY_SECRET_RE = re.compile(
     r"(?i)([?&;](?:" + "|".join(re.escape(k) for k in SENSITIVE_QUERY_KEYS) + r")=)[^&;\s\"'<>#]*")
 
 
+# name = value and "name": "value" pairs with a secret-like name, anywhere in a text (not only in URLs)
+_SECRET_PAIR_RE = re.compile(
+    r"(?i)((?:access_|refresh_|id_)?token|password|passwd|pwd|client_secret|secret|api[_-]?key|session[_-]?id|otp)"
+    r"(\"?\s*[=:]\s*\"?)[^\s&\"',;}\]]+")
+
+
+def mask_secret_pairs(text: str) -> str:
+    """Masks the value of secret-like name/value pairs, in JSON, form and plain text."""
+    return _SECRET_PAIR_RE.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", text)
+
+
 def mask_query(text: str) -> str:
     """Replaces the values of secret URL parameters with [REDACTED]. Works on paths, request lines and JSON text."""
     return _QUERY_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
@@ -52,6 +63,7 @@ def redact_text(text: str) -> str:
     """Hides sensitive headers, common secrets and personal data by JSON key."""
     text = _HEADER_RE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
     text = mask_query(text)
+    text = mask_secret_pairs(text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     return _PHI_KEY_RE.sub(lambda m: m.group(1) + '"[PHI]"', text)

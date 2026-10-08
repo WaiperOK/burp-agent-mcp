@@ -29,7 +29,7 @@ from urllib.parse import unquote_plus, urlsplit
 import httpmsg
 from httpmsg import MsgError
 from intruder import AUTH_RE
-from redact import mask_query
+from redact import mask_query, redact_text
 
 CHECKS = ("auth", "ids", "malformed", "reflect", "params", "post")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -63,6 +63,7 @@ SEVERITY_HINT = {
     "reflected_input_candidate": "low",
     "sql_error_candidate": "high",
     "sql_boolean_candidate": "high",
+    "other_owner_object_candidate": "high",
 }
 
 
@@ -238,6 +239,8 @@ def _param_probes(ep: Endpoint, known: dict) -> list[Probe]:
 
 
 MAX_POST_FIELDS = 20  # per endpoint: a large body would otherwise take the whole budget
+EVIDENCE_CHARS = 200  # a finding carries at most this much of the answer, after masking
+OWNER_KEYS = ("UserId", "userId", "user_id", "owner", "ownerId", "owner_id")
 
 
 def _request_content_type(raw: str) -> str:
@@ -365,7 +368,46 @@ def _content_type(resp: str) -> str:
     return httpmsg.parse_reply(resp)["headers"].get("content-type", "")
 
 
-def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dict | None) -> dict:
+def _evidence(text: str, pattern: re.Pattern | None = None) -> str:
+    """A short piece of the answer, around the match when there is one, with secrets masked."""
+    at = 0
+    if pattern is not None:
+        m = pattern.search(text)
+        if m:
+            at = max(0, m.start() - 80)
+    return mask_query(redact_text(text[at:at + EVIDENCE_CHARS]))[:EVIDENCE_CHARS]
+
+
+def _owner(text: str) -> str | None:
+    """The owner id of the object in a JSON answer, if the answer names one (for example data.UserId)."""
+    try:
+        data = json.loads(text.strip())
+    except ValueError:
+        return None
+
+    def walk(value, depth: int = 0) -> str | None:
+        if depth > 4:
+            return None
+        if isinstance(value, dict):
+            for key in OWNER_KEYS:
+                if isinstance(value.get(key), (int, str)) and not isinstance(value.get(key), bool):
+                    return str(value[key])
+            children = list(value.values())
+        elif isinstance(value, list):
+            children = value[:5]
+        else:
+            return None
+        for child in children:
+            found = walk(child, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    return walk(data)
+
+
+def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dict | None,
+             evidence: str = "") -> dict:
     method, path = httpmsg.split_request(probe.raw)
     return {
         "candidate": kind,
@@ -377,8 +419,8 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
         "baseline_status": base["status"] if base else None,
         "length": length,
         "note": probe.note,
+        "evidence": evidence,
     }
-
 
 def group_findings(findings: list[dict]) -> list[dict]:
     """One row per kind, method and path, with the number of hits and how many were repeated and confirmed.
@@ -391,8 +433,11 @@ def group_findings(findings: list[dict]) -> list[dict]:
         method = f.get("method", "")
         row = rows.setdefault((f["candidate"], method, path), {
             "candidate": f["candidate"], "method": method, "path": path, "example_url": f["url"],
-            "count": 0, "statuses": set(), "notes": [], "repeated": 0, "confirmed": 0})
+            "hint": SEVERITY_HINT[f["candidate"]], "count": 0, "statuses": set(), "notes": [], "repeated": 0,
+            "confirmed": 0, "example_evidence": ""})
         row["count"] += 1
+        if not row["example_evidence"]:
+            row["example_evidence"] = f.get("evidence", "")
         if f.get("status"):
             row["statuses"].add(f["status"])
         if f.get("note") and f["note"] not in row["notes"] and len(row["notes"]) < 5:
@@ -412,43 +457,53 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
     reported: only an anonymous JSON answer counts as a possible missing check.
     """
     ep = probe.endpoint
+
+    def found(kind: str, pattern: re.Pattern | None = None) -> dict:
+        return _finding(kind, probe, status, length, base, _evidence(text, pattern))
+
     if probe.check == "baseline":
         is_json = "json" in content_type.lower()
         if not ep.has_auth and status == "200" and is_json and _has_data(text) and not _is_static(ep.path):
-            return _finding("anonymous_200_candidate", probe, status, length, None)
+            return found("anonymous_200_candidate")
         return None
     if probe.check == "auth":
         if status == "200" and _has_data(text) and base and base["status"] == "200":
-            return _finding("auth_not_enforced_candidate", probe, status, length, base)
+            return found("auth_not_enforced_candidate")
         return None
     if probe.check == "ids":
         if status == "200" and _has_data(text) and base and base["status"] == "200":
-            return _finding("neighbor_object_exists", probe, status, length, base)
+            new_owner, old_owner = _owner(text), base.get("owner")
+            if new_owner and old_owner and new_owner != old_owner:  # someone else's object
+                return found("other_owner_object_candidate")
+            return found("neighbor_object_exists")
         return None
     if probe.check == "malformed":
         if status and int(status) >= 500:
-            return _finding("server_error_on_malformed_input", probe, status, length, base)
+            return found("server_error_on_malformed_input")
         return None
     if probe.check in ("params_quote", "post_quote"):
         if SQL_ERROR_RE.search(text):
-            return _finding("sql_error_candidate", probe, status, length, base)
+            return found("sql_error_candidate", SQL_ERROR_RE)
         if status and int(status) >= 500:
-            return _finding("server_error_on_malformed_input", probe, status, length, base)
+            return found("server_error_on_malformed_input")
         return None
     if probe.check == "params_bool":
         # an error on the always-true payload means the input reached SQL and broke the query
         if SQL_ERROR_RE.search(text) or (status and int(status) >= 500):
-            return _finding("sql_error_candidate", probe, status, length, base)
+            return found("sql_error_candidate", SQL_ERROR_RE)
         if status == "200" and base and base["status"] == "200" \
                 and length > base["length"] * BOOL_GROWTH + BOOL_MARGIN:
-            return _finding("sql_boolean_candidate", probe, status, length, base)
+            return found("sql_boolean_candidate")
         return None
     if probe.check == "reflect" and probe.marker and probe.marker in text:
-        return _finding("reflected_input_candidate", probe, status, length, base)
-    if probe.check == "post_reflect" and probe.marker and probe.marker in text:
-        return _finding("reflected_input_candidate", probe, status, length, base)
+        return found("reflected_input_candidate", re.compile(re.escape(probe.marker)))
+    if probe.check == "post_reflect":
+        # a 5xx on a harmless value in a field is a server error worth a look, even without a quote
+        if status and int(status) >= 500:
+            return found("server_error_on_malformed_input")
+        if probe.marker and probe.marker in text:
+            return found("reflected_input_candidate", re.compile(re.escape(probe.marker)))
     return None
-
 
 async def _reproduce(finding: dict, probe: Probe, base: dict | None, send, gate_wait, audit, result: dict,
                      min_delay_s: float, spare_requests: int | None = None) -> None:
@@ -534,7 +589,7 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
                                      "Sign in again with browser_guard.py login, then scan again")
                 break
         if probe.check == "baseline":
-            result["baseline"][probe.endpoint.key] = {"status": status, "length": length}
+            result["baseline"][probe.endpoint.key] = {"status": status, "length": length, "owner": _owner(text)}
         base = result["baseline"].get(probe.endpoint.key)
         finding = judge(probe, status, length, text, base, _content_type(resp))
         if finding:

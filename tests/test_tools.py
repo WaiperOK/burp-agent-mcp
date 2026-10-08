@@ -765,6 +765,33 @@ class ActiveScanTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         self.fail("scan did not finish")
 
+    async def test_the_record_with_a_2xx_answer_is_the_one_probed(self):
+        self.RECORDS = [
+            {"request": req(HOST, "POST", "/api/feedback", "Content-Type: application/json\r\n", '{"comment": "a"}'),
+             "response": resp(500, "text/plain", "failed")},
+            {"request": req(HOST, "POST", "/api/feedback", "Content-Type: application/json\r\n", '{"comment": "b"}'),
+             "response": resp(201, "application/json", '{"ok": true}')},
+        ]
+        eps = await server._collect_endpoints("history", None, ("GET", "HEAD", "OPTIONS", "POST"))
+        post = [e for e in eps if e.method == "POST"]
+        self.assertEqual(len(post), 1)
+        self.assertIn('"b"', post[0].raw)
+
+    async def test_finished_job_is_restored_after_a_restart(self):
+        status = await self.run_scan("params,reflect")
+        job_id = status["job_id"]
+        saved = dict(server.SCAN_JOBS)
+        try:
+            server.SCAN_JOBS.clear()  # as after a restart: only the state file is left
+            server._load_scan_jobs()
+            restored = await server.scan_status(job_id)
+        finally:
+            server.SCAN_JOBS.clear()
+            server.SCAN_JOBS.update(saved)
+        self.assertTrue(restored["restored"])
+        self.assertEqual(restored["state"], "done")
+        self.assertTrue(restored["groups"])  # the findings are read back from the findings file
+
     async def test_active_checks_find_the_planted_behaviour(self):
         status = await self.run_scan("params,post,reflect")
         kinds = {f["candidate"] for f in status["findings"]}
@@ -808,6 +835,60 @@ class ReplyViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"ok": true', out["body"])
         self.assertNotIn("abc123", json.dumps(out))
         self.assertNotIn("response", out)  # the raw wrapper is no longer returned
+
+
+class LoginLocalTests(unittest.IsolatedAsyncioTestCase):
+    """Signing in: local test hosts only, in scope, active mode, and the password never leaves the gateway."""
+
+    def setUp(self):
+        self._saved_env = {k: os.environ.pop(k, None) for k in (server.LOGIN_EMAIL_ENV, server.LOGIN_PASSWORD_ENV)}
+        self._saved = (server.POLICY, server.GATE)
+
+    def tearDown(self):
+        server.POLICY, server.GATE = self._saved
+        for key, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    async def test_only_local_test_hosts_are_allowed(self):
+        out = await server.login_local("https://app.example.com/login", reason="sign in")
+        self.assertIn("local test hosts", out["error"])
+
+    async def test_reason_is_required(self):
+        self.assertIn("reason is required", (await server.login_local("http://127.0.0.1:3000/", " "))["error"])
+
+    async def test_environment_must_hold_the_account(self):
+        server.POLICY = dataclasses.replace(self._saved[0], authorized_hosts=["ehealth.test.local", "127.0.0.1"],
+                                            scope_urls=["https://ehealth.test.local/", "http://127.0.0.1:3000/"])
+        out = await server.login_local("http://127.0.0.1:3000/#/login", reason="sign in")
+        self.assertIn(server.LOGIN_EMAIL_ENV, out["error"])
+
+    async def test_password_is_typed_but_never_returned_or_audited(self):
+        password = "pw-never-shown-7731"
+        os.environ[server.LOGIN_EMAIL_ENV] = "tester@example.test"
+        os.environ[server.LOGIN_PASSWORD_ENV] = password
+        server.POLICY = dataclasses.replace(self._saved[0], authorized_hosts=["ehealth.test.local", "127.0.0.1"],
+                                            scope_urls=["https://ehealth.test.local/", "http://127.0.0.1:3000/"])
+        server.GATE = Gate(server.POLICY)
+        typed = {}
+
+        async def fake_sign_in(login_url, email, secret, **kwargs):  # stands in for the browser
+            typed["email"], typed["password"] = email, secret
+            return {"signed_in": True, "status": 200}
+
+        server.BROWSER.sign_in = fake_sign_in
+        try:
+            out = await server.login_local("http://127.0.0.1:3000/#/login", reason="sign in for the test")
+        finally:
+            del server.BROWSER.sign_in
+        self.assertTrue(out["signed_in"])
+        self.assertEqual(typed["password"], password)  # the browser did receive it
+        self.assertNotIn(password, json.dumps(out))  # the answer does not
+        audit = Path(server.POLICY.audit_log).read_text(encoding="utf-8")
+        self.assertNotIn(password, audit)  # nor does the audit log
+        self.assertIn("login_local", audit)
 
 
 if __name__ == "__main__":

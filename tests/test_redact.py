@@ -61,5 +61,16 @@ class QueryMaskTests(unittest.TestCase):
         self.assertEqual(mask_query("/a?session="), "/a?session=[REDACTED]")
 
 
+class SecretPairTests(unittest.TestCase):
+    def test_secret_pairs_in_text_and_json_are_masked(self):
+        self.assertNotIn("supersecret12", redact_text("note: token=supersecret12 end"))
+        out = redact_text('{"password": "pw123", "name": "shop"}')
+        self.assertNotIn("pw123", out)
+        self.assertIn('"name": "shop"', out)  # other fields are kept
+
+    def test_words_without_a_value_are_kept(self):
+        self.assertEqual(redact_text("tokens are useful"), "tokens are useful")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,6 +95,25 @@ class GuardedBrowser:
             await self._pw.stop()
         self._ctx = self._pw = self._page = None
 
+    async def sign_in(self, login_url: str, email: str, password: str, *, email_selector: str,
+                      password_selector: str, submit_selector: str, response_path: str) -> dict:
+        """Signs in with a test account on a local test application, in this browser (through the guard and proxy).
+
+        The caller has checked that the host is local and in scope. The values are typed into the page here and are
+        not returned. Only the HTTP status of the sign-in answer comes back.
+        """
+        async def fn(page):
+            await page.goto(login_url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_selector(email_selector, timeout=20000)
+            await page.fill(email_selector, email, timeout=10000)
+            await page.fill(password_selector, password, timeout=10000)
+            async with page.expect_response(lambda r: r.url.split("?")[0].endswith(response_path),
+                                            timeout=20000) as answer:
+                await page.click(submit_selector, timeout=10000)
+            status = (await answer.value).status
+            return {"signed_in": status == 200, "status": status}
+        return await self._act(fn)
+
     # ----- guard -----
 
     def _note_blocked(self, host: str) -> None:

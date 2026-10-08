@@ -1137,6 +1137,67 @@ async def request_url(url: str, reason: str, method: str = "GET", headers: dict[
 CHECK_NAMES = tuple(scanner.CHECKS)
 SCAN_ENDPOINT_CAP = 300
 SCAN_JOBS: dict[str, dict] = {}
+SCAN_JOBS_KEEP = 50  # finished jobs kept in the state file
+
+
+def _scan_jobs_path() -> Path:
+    """Job summaries survive a restart: they are kept next to the findings file, owner only."""
+    return Path(POLICY.findings_file).expanduser().parent / "scan_jobs.json"
+
+
+def _save_scan_jobs() -> None:
+    rows = {}
+    for job_id, job in list(SCAN_JOBS.items())[-SCAN_JOBS_KEEP:]:
+        res = job["result"]
+        rows[job_id] = {"state": job["state"], "started": job["started"], "total": job["total"],
+                        "sent": res["sent"], "errors": res["errors"], "stopped": res["stopped"],
+                        "session": res.get("session", {}), "findings_total": len(res["findings"])}
+    path = _scan_jobs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(rows, fh)
+    os.replace(tmp, path)
+
+
+def _load_scan_jobs() -> None:
+    """Restores job summaries after a restart. A job that was still running is marked interrupted."""
+    path = _scan_jobs_path()
+    if not path.is_file():
+        return
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # an unreadable state file is ignored: findings are still in their own file
+    for job_id, row in rows.items():
+        state = "interrupted" if row.get("state") == "running" else row.get("state", "done")
+        SCAN_JOBS[job_id] = {"state": state, "stop_requested": True, "started": row.get("started", 0),
+                             "total": row.get("total", 0), "restored": True,
+                             "result": {"findings": [], "sent": row.get("sent", 0), "errors": row.get("errors", 0),
+                                        "stopped": row.get("stopped"), "baseline": {},
+                                        "session": row.get("session", {}),
+                                        "findings_total": row.get("findings_total", 0)}}
+
+
+def _restored_findings(job_id: str, limit: int = 100) -> list[dict]:
+    """The findings of a restored job, read from the findings file (the last ones)."""
+    path = Path(POLICY.findings_file).expanduser().parent / "scan_findings.jsonl"
+    if not path.is_file():
+        return []
+    mine = []
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("job_id") == job_id:
+                mine.append(rec)
+    return mine[-limit:]
+
+
+_load_scan_jobs()  # summaries of earlier runs are available after a restart
 
 
 def _parse_checks(checks: str) -> tuple:
@@ -1161,6 +1222,7 @@ async def _collect_endpoints(source: str, openapi_name: str | None,
                              methods: tuple = scanner.SAFE_METHODS) -> list[scanner.Endpoint]:
     """Endpoints for the scanner: from history (only in scope) or from OpenAPI via scope_urls (no records sent)."""
     seen: dict[tuple, scanner.Endpoint] = {}
+    ok_keys: set[tuple] = set()  # endpoints that have a record with a 2xx answer
     if source == "history":
         async for item in _scoped_items():
             raw = item.get("request", "") or ""
@@ -1170,7 +1232,13 @@ async def _collect_endpoints(source: str, openapi_name: str | None,
                 continue  # a method the scan does not use, or a damaged record
             if ep is None:  # outside the scope, under either scheme
                 continue
-            seen.setdefault(ep.key, ep)
+            # one record per endpoint: the first one that got a 2xx answer, else the first one seen. A request
+            # that failed (say, with a wrong id) would otherwise be probed in place of a working one.
+            ok = (httpmsg.status_of(item.get("response", "") or "") or "").startswith("2")
+            if ep.key not in seen or (ok and ep.key not in ok_keys):
+                seen[ep.key] = ep
+            if ok:
+                ok_keys.add(ep.key)
             if len(seen) >= SCAN_ENDPOINT_CAP:
                 break
     elif source == "openapi":
@@ -1298,6 +1366,7 @@ async def _scan_job(job_id: str, probes: list, min_delay_s: float, max_requests:
                      summary={"state": job["state"], "sent": job["result"]["sent"],
                               "errors": job["result"]["errors"], "findings": len(job["result"]["findings"]),
                               "stopped": job["result"]["stopped"]})
+        _save_scan_jobs()
 
 
 @mcp.tool()
@@ -1337,6 +1406,7 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
                                                           "stopped": None, "baseline": {}}}
     min_delay_s = max(POLICY.scan_min_delay_ms, 0) / 1000
     SCAN_JOBS[job_id]["task"] = asyncio.create_task(_scan_job(job_id, probes, min_delay_s, limit))
+    _save_scan_jobs()
     plan = _plan_summary(endpoints, probes)
     AUDIT.record("scan_start", "allow", args, summary={"job_id": job_id, "endpoints_in_run": plan["endpoints_in_run"],
                                                         "probes": plan["probes"], "per_check": plan["per_check"]})
@@ -1350,9 +1420,12 @@ async def scan_status(job_id: str) -> dict:
     if job is None:
         return {"error": "unknown job_id"}
     res = job["result"]
+    if job.get("restored"):  # after a restart the findings are read back from their file
+        res = {**res, "findings": _restored_findings(job_id)}
     return _envelope({
         "job_id": job_id,
         "state": job["state"],
+        "restored": bool(job.get("restored")),
         "sent": res["sent"],
         "total": job["total"],
         "errors": res["errors"],
@@ -1374,6 +1447,52 @@ async def scan_stop(job_id: str) -> dict:
     job["stop_requested"] = True
     AUDIT.record("scan_stop", "allow", {"job_id": job_id})
     return {"job_id": job_id, "stop_requested": True, "state": job["state"]}
+
+
+# ---------- Signing in to a local test application ----------
+# The password comes from the gateway's environment, never from a tool argument, and is never returned or logged.
+LOGIN_EMAIL_ENV = "BURP_AGENT_LOGIN_EMAIL"
+LOGIN_PASSWORD_ENV = "BURP_AGENT_LOGIN_PASSWORD"
+LOCAL_HOST_RE = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(\.[a-z0-9-]+)*\.(localhost|test))$")
+
+
+@mcp.tool()
+async def login_local(url: str, reason: str, email_selector: str = "#email", password_selector: str = "#password",
+                      submit_selector: str = "#loginButton", response_path: str = "/rest/user/login") -> dict:
+    """SIGN IN to a LOCAL test application with the test account from the gateway's environment.
+
+    Only local test hosts are allowed: 127.0.0.1, localhost, *.localhost and *.test, inside the scope. The account is
+    read from BURP_AGENT_LOGIN_EMAIL and BURP_AGENT_LOGIN_PASSWORD. The password is typed by the browser and is never
+    returned, logged or shown. url: the login page. The selectors default to the OWASP Juice Shop login form.
+    reason is required. Signing in sends a POST request, so POST must be in the policy's allowed_methods.
+    """
+    args = {"url": url[:300], "reason": reason[:300]}  # no credentials in the arguments or the audit
+    if not reason.strip():
+        AUDIT.record("login_local", "deny", args, error="reason is required")
+        return {"error": "reason is required"}
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if not LOCAL_HOST_RE.match(host):
+            raise PolicyError("sign-in is allowed only on local test hosts: 127.0.0.1, localhost, *.localhost, *.test")
+        if not POLICY.host_in_scope(host):
+            raise PolicyError(f"host not in authorized scope: {host}")
+        _require_active()
+        email = os.environ.get(LOGIN_EMAIL_ENV, "")
+        password = os.environ.get(LOGIN_PASSWORD_ENV, "")
+        if not email or not password:
+            raise PolicyError(f"set {LOGIN_EMAIL_ENV} and {LOGIN_PASSWORD_ENV} in the gateway's environment")
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        _scope_check(host, port, parts.scheme == "https", parts.path or "/")
+        _active_gate(host, "POST")
+        out = await BROWSER.sign_in(url, email, password, email_selector=email_selector,
+                                    password_selector=password_selector, submit_selector=submit_selector,
+                                    response_path=response_path)
+    except (PolicyError, BrowserError) as ex:
+        AUDIT.record("login_local", "deny", args, error=str(ex)[:300])
+        return {"error": str(ex)[:300]}
+    AUDIT.record("login_local", "allow", args, summary={"signed_in": out["signed_in"], "status": out["status"]})
+    return _envelope({"signed_in": out["signed_in"], "status": out["status"]})
 
 
 # ---------- Burp extensions written by the model (see plugins.py) ----------
