@@ -1142,10 +1142,10 @@ async def _collect_endpoints(source: str, openapi_name: str | None) -> list[scan
         async for item in _scoped_items():
             raw = item.get("request", "") or ""
             try:
-                ep = scanner.endpoint_from_raw(raw, "history")
+                ep = scanner.endpoint_in_scope(raw, "history", POLICY.url_in_scope)
             except (MsgError, ValueError):
                 continue  # not GET/HEAD/OPTIONS, or a damaged record
-            if not POLICY.url_in_scope(ep.origin + ep.path.split("?", 1)[0]):
+            if ep is None:  # outside the scope, under either scheme
                 continue
             seen.setdefault(ep.key, ep)
             if len(seen) >= SCAN_ENDPOINT_CAP:

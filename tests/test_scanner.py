@@ -151,5 +151,35 @@ class ReproduceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reserved", out["findings"][0]["reproduce_error"])
 
 
+class SchemeTests(unittest.TestCase):
+    """History does not store the scheme: the scope decides it when the Host header names a port."""
+
+    def _raw(self, host_header: str) -> str:
+        return f"GET /api/Products HTTP/1.1\r\nHost: {host_header}\r\n\r\n"
+
+    def test_plain_http_port_is_found_when_the_scope_says_http(self):
+        allowed = {"http://127.0.0.1:3000/api/Products"}
+        ep = scanner.endpoint_in_scope(self._raw("127.0.0.1:3000"), "history", lambda u: u in allowed)
+        self.assertIsNotNone(ep)
+        self.assertFalse(ep.use_https)
+        self.assertEqual(ep.origin, "http://127.0.0.1:3000")
+
+    def test_https_is_kept_when_the_scope_allows_it(self):
+        allowed = {"https://app.test:8443/api/Products"}
+        ep = scanner.endpoint_in_scope(self._raw("app.test:8443"), "history", lambda u: u in allowed)
+        self.assertTrue(ep.use_https)
+
+    def test_outside_the_scope_under_either_scheme_gives_none(self):
+        self.assertIsNone(scanner.endpoint_in_scope(self._raw("127.0.0.1:3000"), "history", lambda u: False))
+
+    def test_without_a_port_the_https_default_is_the_only_guess(self):
+        seen = []
+        def in_scope(url):
+            seen.append(url)
+            return False
+        scanner.endpoint_in_scope(self._raw(HOST), "history", in_scope)
+        self.assertEqual(seen, [f"https://{HOST}/api/Products"])  # no http:// candidate is tried
+
+
 if __name__ == "__main__":
     unittest.main()

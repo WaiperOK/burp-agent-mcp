@@ -14,7 +14,7 @@ Every finding is a candidate for manual review, not a confirmed vulnerability. R
 import asyncio
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 import httpmsg
@@ -81,6 +81,23 @@ def endpoint_from_raw(raw: str, source: str) -> Endpoint:
     has_auth = any(line.partition(":")[0].strip().lower() in _AUTH for line in raw.replace("\r\n", "\n").split("\n")[1:] if line.strip())
     return Endpoint(method=method, host=host, port=port, use_https=use_https, path=path, raw=raw,
                     has_auth=has_auth, source=source)
+
+
+def endpoint_in_scope(raw: str, source: str, in_scope) -> Endpoint | None:
+    """Endpoint from a history record that the scope allows, or None.
+
+    History does not say whether a connection was HTTP or HTTPS. If the Host header names a port, both schemes
+    are tried, and the one that the scope allows is used. Without a port, the HTTPS default is the only guess.
+    """
+    ep = endpoint_from_raw(raw, source)
+    host_value = next((l for l in raw.replace("\r\n", "\n").split("\n")[1:] if l.lower().startswith("host:")), "")
+    candidates = [ep]
+    if ":" in host_value.partition(":")[2]:  # an explicit port is in the Host header
+        candidates.append(replace(ep, use_https=not ep.use_https))
+    for cand in candidates:
+        if in_scope(cand.origin + cand.path.split("?", 1)[0]):
+            return cand
+    return None
 
 
 def endpoint_from_url(url: str, method: str = "GET") -> Endpoint:
