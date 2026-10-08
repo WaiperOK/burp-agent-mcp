@@ -460,5 +460,39 @@ class FindingDetailTests(unittest.TestCase):
         self.assertEqual(out["candidate"], "server_error_on_malformed_input")
 
 
+class SeverityCalibrationTests(unittest.TestCase):
+    def _ep(self, path: str, auth: bool = False):
+        cookie = "Cookie: s=1\\r\\n" if auth else ""
+        return scanner.endpoint_from_raw(f"GET {path} HTTP/1.1\\r\\nHost: {HOST}\\r\\n{cookie}\\r\\n", "history")
+
+    def test_signed_in_answer_about_a_person_is_high(self):
+        ep = self._ep("/rest/user/whoami", auth=True)
+        out = scanner.judge(scanner.Probe("auth", ep, ep.raw), "200", 40, '{"user":{"email":"a@b.test"}}',
+                            {"status": "200", "length": 9})
+        self.assertEqual((out["candidate"], out["hint"]), ("auth_not_enforced_candidate", "high"))
+
+    def test_answer_with_no_person_is_only_a_low_lead(self):
+        ep = self._ep("/rest/continue-code", auth=True)
+        out = scanner.judge(scanner.Probe("auth", ep, ep.raw), "200", 80, '{"continueCode":"abc123xyz"}',
+                            {"status": "200", "length": 9})
+        self.assertEqual(out["hint"], "low")
+
+    def test_anonymous_admin_config_is_medium_and_public_list_is_low(self):
+        admin = self._ep("/rest/admin/application-configuration")
+        public = self._ep("/rest/languages")
+        text = '{"status":"success","data":[{"key":"en"}]}'
+        self.assertEqual(scanner.judge(scanner.Probe("baseline", admin, admin.raw), "200", 50, text, None,
+                                       "application/json")["hint"], "medium")
+        self.assertEqual(scanner.judge(scanner.Probe("baseline", public, public.raw), "200", 50, text, None,
+                                       "application/json")["hint"], "low")
+
+    def test_group_takes_the_worst_hint_of_its_findings(self):
+        rows = scanner.group_findings([
+            {"candidate": "auth_not_enforced_candidate", "method": "GET", "url": "https://h/x", "hint": "low"},
+            {"candidate": "auth_not_enforced_candidate", "method": "GET", "url": "https://h/x?a=1", "hint": "high"},
+        ])
+        self.assertEqual(rows[0]["hint"], "high")
+
+
 if __name__ == "__main__":
     unittest.main()

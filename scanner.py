@@ -406,12 +406,21 @@ def _owner(text: str) -> str | None:
     return walk(data)
 
 
+USER_DATA_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+USER_KEY_RE = re.compile(r'"(username|user_name|email|login)"\s*:', re.I)
+
+
+def _user_specific(text: str) -> bool:
+    """True if an answer names a person or an account: an owner id, an e-mail address or a user name."""
+    return _owner(text) is not None or bool(USER_DATA_RE.search(text)) or bool(USER_KEY_RE.search(text))
+
+
 def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dict | None,
-             evidence: str = "") -> dict:
+             evidence: str = "", hint: str | None = None) -> dict:
     method, path = httpmsg.split_request(probe.raw)
     return {
         "candidate": kind,
-        "hint": SEVERITY_HINT[kind],
+        "hint": hint or SEVERITY_HINT[kind],
         "check": probe.check,
         "method": method,
         "url": mask_query(probe.endpoint.origin + path),  # findings are stored and shown: no secrets in the URL
@@ -421,6 +430,9 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
         "note": probe.note,
         "evidence": evidence,
     }
+
+SEVERITY_RANK = {"info": 1, "low": 2, "medium": 3, "high": 4}
+
 
 def group_findings(findings: list[dict]) -> list[dict]:
     """One row per kind, method and path, with the number of hits and how many were repeated and confirmed.
@@ -433,9 +445,11 @@ def group_findings(findings: list[dict]) -> list[dict]:
         method = f.get("method", "")
         row = rows.setdefault((f["candidate"], method, path), {
             "candidate": f["candidate"], "method": method, "path": path, "example_url": f["url"],
-            "hint": SEVERITY_HINT[f["candidate"]], "count": 0, "statuses": set(), "notes": [], "repeated": 0,
+            "hint": "info", "count": 0, "statuses": set(), "notes": [], "repeated": 0,
             "confirmed": 0, "example_evidence": ""})
         row["count"] += 1
+        if SEVERITY_RANK.get(f.get("hint", ""), 0) > SEVERITY_RANK.get(row["hint"], 0):  # the group has the worst hint
+            row["hint"] = f["hint"]
         if not row["example_evidence"]:
             row["example_evidence"] = f.get("evidence", "")
         if f.get("status"):
@@ -458,17 +472,20 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
     """
     ep = probe.endpoint
 
-    def found(kind: str, pattern: re.Pattern | None = None) -> dict:
-        return _finding(kind, probe, status, length, base, _evidence(text, pattern))
+    def found(kind: str, pattern: re.Pattern | None = None, hint: str | None = None) -> dict:
+        return _finding(kind, probe, status, length, base, _evidence(text, pattern), hint)
 
     if probe.check == "baseline":
         is_json = "json" in content_type.lower()
         if not ep.has_auth and status == "200" and is_json and _has_data(text) and not _is_static(ep.path):
-            return found("anonymous_200_candidate")
+            # medium when it names a person or looks administrative; a public list is low
+            sensitive = re.search(r"admin|config|secret|internal|debug|setting", ep.path, re.I)
+            return found("anonymous_200_candidate", hint="medium" if (sensitive or _user_specific(text)) else "low")
         return None
     if probe.check == "auth":
         if status == "200" and _has_data(text) and base and base["status"] == "200":
-            return found("auth_not_enforced_candidate")
+            # high when the answer is someone's data; an answer with no person in it is only a low lead
+            return found("auth_not_enforced_candidate", hint="high" if _user_specific(text) else "low")
         return None
     if probe.check == "ids":
         if status == "200" and _has_data(text) and base and base["status"] == "200":
