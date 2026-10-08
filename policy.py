@@ -69,6 +69,8 @@ class Policy:
     findings_file: str = "~/burp_agent_findings/findings.jsonl"
     # Burp proxy for the browser; None means the browser connects directly (local tests only).
     browser_proxy: str | None = "http://127.0.0.1:8080"
+    # None: Playwright's bundled Chromium. "chrome" or "msedge": the browser installed on this machine.
+    browser_channel: str | None = None
     browser_profile_dir: str = "~/burp_agent_browser_profile"
     # Intruder: hard ceilings per run, protection against overloading the target.
     intruder_max_requests: int = 50
@@ -126,6 +128,10 @@ class Policy:
             if _norm_path(parts.path or "/") is None:
                 raise PolicyError(f"scope_url path contains dot segments: {u!r}")
 
+        browser_channel = str(data.get("browser_channel", "") or "").strip().lower() or None
+        if browser_channel not in (None, "chrome", "msedge"):
+            raise PolicyError(f"browser_channel must be chrome or msedge, got {browser_channel!r}")
+
         return cls(
             engagement_id=engagement,
             mode=mode,
@@ -143,6 +149,7 @@ class Policy:
             openapi_files=tuple(str(Path(p).expanduser()) for p in data.get("openapi_files", [])),
             findings_file=str(data.get("findings_file", "~/burp_agent_findings/findings.jsonl")),
             browser_proxy=data.get("browser_proxy", "http://127.0.0.1:8080") or None,
+            browser_channel=browser_channel,
             browser_profile_dir=str(data.get("browser_profile_dir", "~/burp_agent_browser_profile")),
             intruder_max_requests=int(data.get("intruder_max_requests", 50)),
             intruder_min_delay_ms=int(data.get("intruder_min_delay_ms", 300)),

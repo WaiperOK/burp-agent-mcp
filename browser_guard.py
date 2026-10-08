@@ -78,6 +78,8 @@ class GuardedBrowser:
             opts = {"headless": self.headless, "ignore_https_errors": True}
             if self.policy.browser_proxy:
                 opts["proxy"] = {"server": self.policy.browser_proxy}
+            if self.policy.browser_channel:
+                opts["channel"] = self.policy.browser_channel
             profile.mkdir(parents=True, exist_ok=True)
             self._ctx = await self._pw.chromium.launch_persistent_context(str(profile), **opts)
             await self._ctx.route("**/*", self._guard)
@@ -341,6 +343,8 @@ async def _manual_login(url: str) -> None:
         opts = {"headless": False, "ignore_https_errors": True}
         if policy.browser_proxy:
             opts["proxy"] = {"server": policy.browser_proxy}
+        if policy.browser_channel:
+            opts["channel"] = policy.browser_channel
         ctx = await pw.chromium.launch_persistent_context(profile, **opts)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto(url)

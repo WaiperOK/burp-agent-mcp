@@ -84,6 +84,13 @@ class PolicyValidationTests(unittest.TestCase):
             self.assertTrue(policy(tmp, environment="STAGE").environment_ok)
             self.assertFalse(policy(tmp, environment="").environment_ok)
 
+    def test_browser_channel_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(policy(tmp).browser_channel)
+            self.assertEqual(policy(tmp, browser_channel="Chrome").browser_channel, "chrome")
+            with self.assertRaises(PolicyError):
+                policy(tmp, browser_channel="firefox")
+
 
 if __name__ == "__main__":
     unittest.main()
