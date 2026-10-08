@@ -213,19 +213,39 @@ async def _scoped_items():
         offset += len(items)
 
 
+async def _load_items(history_ids: list[int]) -> dict[int, dict]:
+    """Full records for several history ids, through the cache. Raises PolicyError if a record does not exist.
+
+    Burp returns records by offset, one call per page. Missing ids are read in pages that start at the lowest
+    one, so ids that sit close together cost one call instead of one each.
+    """
+    found: dict[int, dict] = {}
+    pending = []
+    for hid in dict.fromkeys(history_ids):  # unique, in the order given
+        if hid in _ITEM_CACHE:
+            _ITEM_CACHE.move_to_end(hid)
+            found[hid] = _ITEM_CACHE[hid]
+        else:
+            pending.append(hid)
+    pending.sort()
+    while pending:
+        start = pending[0]
+        count = min(HISTORY_PAGE, pending[-1] - start + 1)  # never read past the last id that is needed
+        page = httpmsg.parse_history(await _upstream("get_proxy_http_history", {"count": count, "offset": start}))
+        if not page:
+            raise PolicyError(f"history item not found: {start}")
+        for i, item in enumerate(page):  # the page may be shorter than asked (Burp truncates): the rest stays pending
+            _ITEM_CACHE[start + i] = item
+            found[start + i] = item
+            while len(_ITEM_CACHE) > ITEM_CACHE_SIZE:
+                _ITEM_CACHE.popitem(last=False)
+        pending = [hid for hid in pending if hid not in found]
+    return {hid: found[hid] for hid in history_ids}
+
+
 async def _load_item(history_id: int) -> dict:
     """One history record through the cache. Raises PolicyError if the record does not exist."""
-    if history_id in _ITEM_CACHE:
-        _ITEM_CACHE.move_to_end(history_id)
-        return _ITEM_CACHE[history_id]
-    items = httpmsg.parse_history(
-        await _upstream("get_proxy_http_history", {"count": 1, "offset": history_id}))
-    if not items:
-        raise PolicyError(f"history item not found: {history_id}")
-    _ITEM_CACHE[history_id] = items[0]
-    if len(_ITEM_CACHE) > ITEM_CACHE_SIZE:
-        _ITEM_CACHE.popitem(last=False)
-    return items[0]
+    return (await _load_items([history_id]))[history_id]
 
 
 def _scope_of(item: dict) -> tuple[str, str, str]:
@@ -322,8 +342,9 @@ async def search_proxy_history(host: str | None = None, path_contains: str | Non
     hits, scanned = HISTORY.find(wanted, limit)
     matches = []
     try:
+        loaded = await _load_items([e.history_id for e in hits])  # as few Burp calls as possible
         for e in hits:
-            item = await _load_item(e.history_id)  # full record, from the item cache when possible
+            item = loaded[e.history_id]
             if fingerprint(item) != e.fingerprint:  # the history changed under the index: start over
                 _ITEM_CACHE.pop(e.history_id, None)
                 HISTORY.reset()

@@ -617,6 +617,28 @@ class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(full["cached"])  # the partial result was not cached, so this is a real recomputation
         self.assertEqual(full["total_endpoints"], 3)
 
+    async def test_neighbouring_matches_are_read_in_one_call(self):
+        await server.search_proxy_history(host=HOST)  # builds the index
+        server._ITEM_CACHE.clear()  # force the matched records to be read from Burp again
+        self.history_offsets.clear()
+        out = await server.search_proxy_history(host=HOST)
+        self.assertEqual([i["history_id"] for i in out["items"]], [0, 1, 2, 4])
+        self.assertEqual(self.history_offsets, [0])  # ids 0 to 4 are read in one page, not one call each
+
+    async def test_short_pages_from_burp_are_followed_until_every_match_is_read(self):
+        async def truncating(tool, arguments):  # Burp returns at most two records per page
+            if tool == "get_proxy_http_history":
+                self.history_offsets.append(arguments["offset"])
+                off, cnt = arguments["offset"], min(arguments["count"], 2)
+                items = FAKE_HISTORY[off:off + cnt]
+                return json.dumps(items) if items else "Reached end of items"
+            return await fake_upstream(tool, arguments)
+
+        server._upstream = truncating
+        out = await server.search_proxy_history(host=HOST)
+        self.assertEqual([i["history_id"] for i in out["items"]], [0, 1, 2, 4])
+        self.assertGreater(len(self.history_offsets), 2)  # more than one call was needed for the records
+
     async def test_out_of_scope_host_is_refused(self):
         out = await server.search_proxy_history(host="evil.example")
         self.assertIn("not in authorized scope", out["error"])
