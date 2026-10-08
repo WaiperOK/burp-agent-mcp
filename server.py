@@ -1339,6 +1339,20 @@ def _append_finding(job_id: str, finding: dict) -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _relogin_configured() -> bool:
+    return all(os.environ.get(name) for name in (LOGIN_URL_ENV, LOGIN_EMAIL_ENV, LOGIN_PASSWORD_ENV))
+
+
+async def _relogin_for_scan() -> str | None:
+    """Signs in again during a scan and returns the new bearer token, or None. Uses login_local, so every rule
+    of sign-in applies (local test host, scope, active mode, POST allowed) and every attempt is audited."""
+    out = await login_local(os.environ.get(LOGIN_URL_ENV, ""),
+                            reason="sign in again: the scan's signed-in requests were refused")
+    if not out.get("signed_in"):
+        return None
+    return await BROWSER.bearer_token()
+
+
 async def _scan_job(job_id: str, probes: list, min_delay_s: float, max_requests: int) -> None:
     """Runs one scan job in the background and keeps its state in SCAN_JOBS."""
     job = SCAN_JOBS[job_id]
@@ -1356,7 +1370,8 @@ async def _scan_job(job_id: str, probes: list, min_delay_s: float, max_requests:
     try:
         await scanner.run(probes, send, _gate_wait, audit, min_delay_s=min_delay_s,
                           max_seconds=POLICY.scan_max_seconds, should_stop=lambda: job["stop_requested"],
-                          result=job["result"], on_finding=on_finding, max_requests=max_requests)
+                          result=job["result"], on_finding=on_finding, max_requests=max_requests,
+                          relogin=_relogin_for_scan if _relogin_configured() else None)
         job["state"] = "stopped" if job["result"]["stopped"] else "done"
     except Exception as ex:  # an unexpected error must not silently stop the job
         job["state"] = "error"
@@ -1449,10 +1464,51 @@ async def scan_stop(job_id: str) -> dict:
     return {"job_id": job_id, "stop_requested": True, "state": job["state"]}
 
 
+MAX_CRAWL_PAGES = 50
+MAX_CRAWL_DEPTH = 3
+
+
+@mcp.tool()
+async def browser_crawl(start_url: str, reason: str, max_pages: int = 20, max_depth: int = 2) -> dict:
+    """CRAWL in the browser from start_url: opens pages reachable by links on the same host (active, GET page loads).
+
+    The traffic lands in Burp history, so scan_plan can use it afterwards. Links that sign out or change data (logout,
+    delete, reset, checkout, payment) are skipped. Nothing is typed or submitted. max_pages up to 50, max_depth up
+    to 3. reason is required.
+    """
+    args = {"start_url": start_url[:300], "reason": reason[:300], "max_pages": max_pages, "max_depth": max_depth}
+    if not reason.strip():
+        AUDIT.record("browser_crawl", "deny", args, error="reason is required")
+        return {"error": "reason is required"}
+    try:
+        parts = urlsplit(start_url)
+        host = (parts.hostname or "").lower()
+        if parts.scheme not in ("http", "https") or not host:
+            raise PolicyError("start_url must be an http or https URL")
+        if not POLICY.host_in_scope(host):
+            raise PolicyError(f"host not in authorized scope: {host}")
+        _require_active()
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        _scope_check(host, port, parts.scheme == "https", parts.path or "/")
+        _active_gate(host, "GET")
+        pages = max(1, min(int(max_pages), MAX_CRAWL_PAGES))
+        depth = max(0, min(int(max_depth), MAX_CRAWL_DEPTH))
+        out = await BROWSER.crawl(start_url, max_pages=pages, max_depth=depth)
+    except (PolicyError, BrowserError, ValueError) as ex:
+        AUDIT.record("browser_crawl", "deny", args, error=str(ex)[:300])
+        return {"error": str(ex)[:300]}
+    visited = [{**v, "url": mask_query(v["url"])} for v in out["visited"]]  # URLs can carry tokens
+    AUDIT.record("browser_crawl", "allow", args,
+                 summary={"visited": len(visited), "skipped_links": out["skipped_links"]})
+    return _envelope({"visited": visited, "left_in_queue": out["left_in_queue"],
+                      "skipped_links": out["skipped_links"]})
+
+
 # ---------- Signing in to a local test application ----------
 # The password comes from the gateway's environment, never from a tool argument, and is never returned or logged.
 LOGIN_EMAIL_ENV = "BURP_AGENT_LOGIN_EMAIL"
 LOGIN_PASSWORD_ENV = "BURP_AGENT_LOGIN_PASSWORD"
+LOGIN_URL_ENV = "BURP_AGENT_LOGIN_URL"  # the login page; a scan signs in again on it when the session expires
 LOCAL_HOST_RE = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(\.[a-z0-9-]+)*\.(localhost|test))$")
 
 

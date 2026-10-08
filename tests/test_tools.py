@@ -891,5 +891,12 @@ class LoginLocalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("login_local", audit)
 
 
+class BrowserCrawlToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_crawl_needs_a_reason_and_an_in_scope_host(self):
+        self.assertIn("reason is required", (await server.browser_crawl("https://ehealth.test.local/", " "))["error"])
+        out = await server.browser_crawl("https://app.example.com/", reason="map the app")
+        self.assertIn("not in authorized scope", out["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

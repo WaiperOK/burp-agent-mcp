@@ -30,6 +30,7 @@ CONFIRM_TOOLS = {
     "browser_open", "browser_click", "browser_fill", "browser_press", "browser_back", "browser_reload",
     "plugin_write", "plugin_compile",  # the operator reads the source the model writes before anything is built
     "login_local",  # the operator confirms each sign-in; the password never passes through the model
+    "browser_crawl",  # the operator confirms each crawl: it generates traffic to the target
 }
 
 SYSTEM_PROMPT = """You help with authorized testing of web applications through Burp Suite.

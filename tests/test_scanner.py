@@ -494,5 +494,61 @@ class SeverityCalibrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["hint"], "high")
 
 
+class ReloginTests(unittest.IsolatedAsyncioTestCase):
+    """An expired session is renewed in the run: the rest of the probes carry the new bearer token."""
+
+    def _endpoints(self, n: int) -> list:
+        return [scanner.endpoint_from_raw(
+            f"GET /api/item/{i} HTTP/1.1\r\nHost: {HOST}\r\nAuthorization: Bearer OLD\r\n\r\n", "history")
+            for i in range(n)]
+
+    async def _run(self, status_for, relogin, n: int = 10) -> tuple[dict, list]:
+        probes = scanner.build_probes(self._endpoints(n), ("auth",), 200)
+        sent = []
+
+        async def send(probe):
+            sent.append(probe.raw)
+            return status_for(probe.raw)
+
+        async def gate_wait(endpoint):
+            return None
+
+        out = await scanner.run(probes, send, gate_wait, lambda e: None, min_delay_s=0, max_seconds=30,
+                                should_stop=lambda: False, result={}, relogin=relogin)
+        return out, sent
+
+    async def test_renewed_session_is_used_for_the_rest_of_the_run(self):
+        async def relogin():
+            return "NEW"
+
+        def status_for(raw):
+            if "Bearer NEW" in raw:
+                return 'HTTP/1.1 200 OK\r\n\r\n{"data": 1}'
+            return "HTTP/1.1 401 X\r\n\r\nno"
+
+        out, sent = await self._run(status_for, relogin)
+        self.assertEqual(out["relogins"], 1)
+        self.assertIsNone(out["stopped"])
+        self.assertTrue(any("Bearer NEW" in raw for raw in sent))
+        for raw in sent:  # the anonymous probes never carry a token
+            if "Authorization" not in raw:
+                self.assertNotIn("Bearer", raw)
+
+    async def test_renewals_are_limited_per_run(self):
+        async def relogin():
+            return "NEW"
+
+        out, _ = await self._run(lambda raw: "HTTP/1.1 401 X\r\n\r\nno", relogin)
+        self.assertEqual(out["relogins"], scanner.SCAN_MAX_RELOGINS)
+        self.assertTrue(out["stopped"].startswith("session looks expired"))
+
+    async def test_failed_sign_in_stops_with_a_reason(self):
+        async def relogin():
+            return None
+
+        out, _ = await self._run(lambda raw: "HTTP/1.1 401 X\r\n\r\nno", relogin)
+        self.assertIn("did not work", out["stopped"])
+
+
 if __name__ == "__main__":
     unittest.main()

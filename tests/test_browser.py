@@ -47,6 +47,12 @@ class Site(BaseHTTPRequestHandler):
             ctype = "text/html; charset=utf-8"
         elif self.path == "/next":
             body, ctype = "<!doctype html><title>Next</title><p>next page</p>".encode(), "text/html; charset=utf-8"
+        elif self.path == "/crawl":
+            body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Crawl</title></head><body>
+<a href="/next">next</a>
+<a href="/logout">sign out</a>
+<a href="http://other.test/">external</a></body></html>""".encode()
+            ctype = "text/html; charset=utf-8"
         elif self.path == "/form":
             body = """<!doctype html><html><head><meta charset="utf-8"><title>Form</title></head><body>
 <form action="/submit" method="post">
@@ -149,6 +155,16 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
             raise
 
     # ----- navigation and guard -----
+
+    async def test_crawl_follows_same_host_links_and_skips_sign_out(self):
+        out = await self.browser.crawl(f"{self.base}/crawl", max_pages=10, max_depth=2)
+        urls = [v["url"] for v in out["visited"]]
+        self.assertEqual(urls, [f"{self.base}/crawl", f"{self.base}/next"])
+        self.assertGreaterEqual(out["skipped_links"], 2)  # the sign-out link and the external link
+
+    async def test_crawl_stops_at_the_page_limit(self):
+        out = await self.browser.crawl(f"{self.base}/crawl", max_pages=1, max_depth=2)
+        self.assertEqual(len(out["visited"]), 1)
 
     async def test_open_in_scope(self):
         out = await self._open_or_skip(self.base + "/")

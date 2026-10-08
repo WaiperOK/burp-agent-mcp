@@ -38,6 +38,8 @@ PUSHBACK = (429, 503)
 # run the rest of the checks, and say so. Checked after at least SESSION_MIN_SAMPLE signed-in baselines.
 SESSION_MIN_SAMPLE = 3
 SESSION_REFUSED_SHARE = 0.8
+# When a sign-in is configured, an expired session is renewed at most this many times per run.
+SCAN_MAX_RELOGINS = 2
 # Candidates from these checks are sent once more to see whether they reproduce.
 REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect", "params_quote", "params_bool")
 # A POST probe changes data on the target, so its candidates are never sent a second time automatically.
@@ -189,6 +191,18 @@ def _has_data(text: str) -> bool:
             return any(content(x) for x in v)
         return v is not None and v != ""
     return content(value)
+
+
+def _with_bearer(raw: str, token: str) -> str:
+    """The same request with its Authorization header replaced by a fresh bearer token.
+
+    A request without an Authorization header is returned unchanged: the anonymous probe must stay anonymous.
+    """
+    head = raw.replace("\r\n", "\n").partition("\n\n")[0]
+    if not any(line.partition(":")[0].strip().lower() == "authorization" for line in head.split("\n")[1:]):
+        return raw
+    method, path = httpmsg.split_request(raw)
+    return httpmsg.build_request(raw, method, path, set_headers={"Authorization": f"Bearer {token}"})
 
 
 def _is_static(path: str) -> bool:
@@ -549,7 +563,8 @@ async def _reproduce(finding: dict, probe: Probe, base: dict | None, send, gate_
 
 
 async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float, max_seconds: float,
-              should_stop, result: dict, on_finding=None, max_requests: int | None = None) -> dict:
+              should_stop, result: dict, on_finding=None, max_requests: int | None = None,
+              relogin=None) -> dict:
     """Sequential run. send(probe) -> response; gate_wait(endpoint) waits for the gate window or raises.
 
     result is a dict that is updated during the run (the job status is visible while it runs).
@@ -557,7 +572,7 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
     max_requests caps probes plus repeats; repeats never take budget from probes that are still to come.
     """
     result.update({"findings": [], "sent": 0, "errors": 0, "stopped": None, "baseline": {},
-                   "session": {"signed_in": 0, "refused": 0}})
+                   "session": {"signed_in": 0, "refused": 0}, "relogins": 0})
     started = time.monotonic()
     consecutive_errors = 0
     for index, probe in enumerate(probes):
@@ -602,9 +617,26 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
                 session["refused"] += 1
             if session["signed_in"] >= SESSION_MIN_SAMPLE and \
                     session["refused"] >= SESSION_REFUSED_SHARE * session["signed_in"]:
-                result["stopped"] = ("session looks expired: signed-in requests get 401. "
-                                     "Sign in again with browser_guard.py login, then scan again")
-                break
+                if relogin is None:
+                    result["stopped"] = ("session looks expired: signed-in requests get 401. "
+                                         "Sign in again with browser_guard.py login, then scan again")
+                    break
+                token = None
+                if result["relogins"] < SCAN_MAX_RELOGINS:
+                    result["relogins"] += 1
+                    try:
+                        token = await relogin()
+                    except Exception:  # a failed sign-in ends the run below, with the reason
+                        token = None
+                    audit({"relogin": result["relogins"], "signed_in_again": bool(token)})
+                if not token:
+                    result["stopped"] = ("session looks expired and signing in again did not work. "
+                                         "Check the local test account and the login page, then scan again")
+                    break
+                for later in probes[index + 1:]:  # the rest of the run uses the fresh token
+                    if later.check != "auth":
+                        later.raw = _with_bearer(later.raw, token)
+                session.update(signed_in=0, refused=0)
         if probe.check == "baseline":
             result["baseline"][probe.endpoint.key] = {"status": status, "length": length, "owner": _owner(text)}
         base = result["baseline"].get(probe.endpoint.key)

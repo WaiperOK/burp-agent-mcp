@@ -44,6 +44,10 @@ def _host(url: str) -> str:
     return (urlsplit(url).hostname or "").lower()
 
 
+# links that sign out or change data are never followed by the crawler
+SKIP_LINK_RE = re.compile(r"log-?out|sign-?out|delete|remove|destroy|reset|checkout|payment|unsubscribe", re.I)
+
+
 class GuardedBrowser:
     def __init__(self, policy: Policy, headless: bool = True):
         self.policy = policy
@@ -113,6 +117,45 @@ class GuardedBrowser:
             status = (await answer.value).status
             return {"signed_in": status == 200, "status": status}
         return await self._act(fn)
+
+    async def crawl(self, start_url: str, *, max_pages: int, max_depth: int) -> dict:
+        """Opens the pages reachable from start_url by links on the same host and port, breadth first.
+
+        Each page load goes through the guard and the proxy, so its traffic lands in Burp history. Links that sign out
+        or change data (logout, delete, reset, checkout, payment) are skipped. Nothing is typed or submitted.
+        """
+        origin = urlsplit(start_url).netloc
+
+        async def fn(page):
+            visited, queue, seen, skipped = [], [(start_url, 0)], {start_url}, 0
+            while queue and len(visited) < max_pages:
+                url, depth = queue.pop(0)
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(1000)  # let the page's own requests run
+                except Exception as ex:  # a page that fails is reported; the crawl goes on
+                    visited.append({"url": url, "error": type(ex).__name__})
+                    continue
+                visited.append({"url": page.url})
+                if depth >= max_depth:
+                    continue
+                hrefs = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
+                for href in hrefs:
+                    parts = urlsplit(href)
+                    if parts.scheme not in ("http", "https") or parts.netloc != origin or SKIP_LINK_RE.search(href):
+                        skipped += 1
+                        continue
+                    if href not in seen:
+                        seen.add(href)
+                        queue.append((href, depth + 1))
+            return {"visited": visited, "left_in_queue": len(queue), "skipped_links": skipped}
+        return await self._act(fn)
+
+    async def bearer_token(self) -> str | None:
+        """The bearer token the signed-in page keeps in localStorage, if any. Used inside the gateway, never returned."""
+        async def fn(page):
+            return {"token": await page.evaluate("() => localStorage.getItem('token')")}
+        return (await self._act(fn)).get("token") or None
 
     # ----- guard -----
 
