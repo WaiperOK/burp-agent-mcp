@@ -150,6 +150,17 @@ class AuditChainTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("line 2", msg)
 
+    def test_secret_in_url_parameter_is_not_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            log = AuditLog(str(path), "TEST-1")
+            log.record("replay_variant", "allow", {"path": "/api/x?access_token=supersecret&page=2"})
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("supersecret", text)
+            self.assertIn("page=2", text)
+            ok, _ = verify(str(path))
+            self.assertTrue(ok)  # the chain covers the masked entry, so verification passes
+
 
 if __name__ == "__main__":
     unittest.main()

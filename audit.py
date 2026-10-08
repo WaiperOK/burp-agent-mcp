@@ -11,6 +11,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from redact import mask_query
+
 GENESIS = "0" * 64
 
 
@@ -41,6 +43,8 @@ class AuditLog:
 
     def record(self, tool: str, decision: str, args: dict, summary=None, error=None) -> None:
         """decision: 'allow' | 'deny' | 'error'."""
+        # secrets in URL parameters are masked before hashing, so the chain covers exactly what is written
+        args = json.loads(mask_query(json.dumps(args, ensure_ascii=False, default=str)))
         with self._lock:
             entry = {
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),

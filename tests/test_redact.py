@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from redact import redact_text  # noqa: E402
+from redact import mask_query, redact_text  # noqa: E402
 
 
 class RedactTests(unittest.TestCase):
@@ -42,6 +42,23 @@ class RedactTests(unittest.TestCase):
         # a vulnerability title must not be masked
         raw = '{"name": "Unencrypted communications", "severity": "LOW"}'
         self.assertIn("Unencrypted communications", redact_text(raw))
+
+
+class QueryMaskTests(unittest.TestCase):
+    def test_secret_parameters_are_masked_and_others_kept(self):
+        out = mask_query("/api/x?page=2&access_token=abc123&sid=zz9")
+        self.assertEqual(out, "/api/x?page=2&access_token=[REDACTED]&sid=[REDACTED]")
+
+    def test_only_whole_parameter_names_match(self):
+        # "mytoken" is not a secret parameter; "token" after a dot is not a parameter either
+        self.assertEqual(mask_query("/a?mytoken=1&v=token.x"), "/a?mytoken=1&v=token.x")
+
+    def test_request_line_and_json_text(self):
+        self.assertIn("?token=[REDACTED]", redact_text("GET /p?token=abc HTTP/1.1\r\nHost: a"))
+        self.assertNotIn("abc", redact_text('{"next": "/p?key=abc&x=1"}'))
+
+    def test_empty_value_is_still_masked(self):
+        self.assertEqual(mask_query("/a?session="), "/a?session=[REDACTED]")
 
 
 if __name__ == "__main__":

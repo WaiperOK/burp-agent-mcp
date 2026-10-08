@@ -25,6 +25,7 @@ from typing import Awaitable, Callable
 
 import httpmsg
 from httpmsg import MsgError
+from redact import mask_query
 
 log = logging.getLogger(__name__)
 STATE_VERSION = 1
@@ -54,7 +55,8 @@ def _entry(history_id: int, item: dict) -> Entry:
         method, path = httpmsg.split_request(req)
     except MsgError:  # a malformed record stays in the index but can never match a search
         method, path = "", ""
-    return Entry(history_id, httpmsg.host_from_request(req) or "", method, path,
+    # secrets in the query are masked here, so neither the file nor a search result ever holds them
+    return Entry(history_id, httpmsg.host_from_request(req) or "", method, mask_query(path),
                  httpmsg.status_of(item.get("response") or ""), fingerprint(item))
 
 
@@ -145,7 +147,8 @@ class HistoryIndex:
             data = json.loads(self._store.read_text(encoding="utf-8"))
             if data.get("version") != STATE_VERSION:
                 raise ValueError("unknown state version")
-            entries = [Entry(int(hid), str(host), str(method), str(path),
+            # paths are masked again on load: a file written by an older version may hold raw secrets
+            entries = [Entry(int(hid), str(host), str(method), mask_query(str(path)),
                              None if status is None else str(status), str(fp))
                        for hid, host, method, path, status, fp in data["entries"]]
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as ex:

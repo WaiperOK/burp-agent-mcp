@@ -40,7 +40,7 @@ from browser_guard import BrowserError, GuardedBrowser
 from history_index import Entry, HistoryIndex, fingerprint
 from httpmsg import MsgError
 from policy import Gate, Policy, PolicyError, RateLimitError
-from redact import redact_text, truncate
+from redact import mask_query, redact_text, truncate
 from upstream import UpstreamClient, UpstreamError
 
 UPSTREAM_TIMEOUT = 60
@@ -413,7 +413,7 @@ async def get_history_item(history_id: int) -> dict:
     req_txt, _ = truncate(redact_text(item.get("request", "") or ""), 4000)
     resp_txt, cut = truncate(redact_text(resp), POLICY.max_response_chars)
     AUDIT.record("get_history_item", "allow", args, summary={"host": host, "method": method})
-    return _envelope({"history_id": history_id, "host": host, "method": method, "path": path,
+    return _envelope({"history_id": history_id, "host": host, "method": method, "path": mask_query(path),
                       "status": httpmsg.status_of(resp), "request": req_txt, "response": resp_txt,
                       "truncated": cut or bool(item.get("response_truncated")),
                       "request_truncated_upstream": bool(item.get("request_truncated")),
@@ -469,7 +469,7 @@ async def search_bundles(pattern: str, max_matches: int = 30, context: int = 80)
             scanned += 1
             for m in rx.finditer(body):
                 s, end = max(0, m.start() - context), min(len(body), m.end() + context)
-                hits.append({"host": host, "path": str(e.get("path", ""))[:300],
+                hits.append({"host": host, "path": mask_query(str(e.get("path", "")))[:300],
                              "sha256": str(e.get("sha256", ""))[:64],
                              "match": redact_text(m.group(0))[:200],
                              "context": redact_text(body[s:end])})
@@ -576,7 +576,7 @@ async def diff_responses(history_a: int, history_b: int) -> dict:
                     keys = _json_keys(json.loads(body))
                 except json.JSONDecodeError:
                     keys = None
-            summaries.append({"history_id": hid, "host": host, "path": path,
+            summaries.append({"history_id": hid, "host": host, "path": mask_query(path),
                               "status": httpmsg.status_of(resp), "content_type": httpmsg.header_of(head, "content-type"),
                               "body_length": len(body), "response_truncated": cut, "json_keys": sorted(keys) if keys else None})
     except (PolicyError, MsgError, UpstreamError, ValueError) as ex:
@@ -646,7 +646,7 @@ async def read_passive_findings(limit: int = 50) -> dict:
             if not isinstance(e, dict) or not POLICY.host_in_scope(str(e.get("host", ""))):
                 continue
             rows.append({"ts": str(e.get("ts", ""))[:40], "host": str(e.get("host", ""))[:253],
-                         "path": str(e.get("path", ""))[:300], "check": str(e.get("check", ""))[:60],
+                         "path": mask_query(str(e.get("path", "")))[:300], "check": str(e.get("check", ""))[:60],
                          "evidence": redact_text(str(e.get("evidence", "")))[:400]})
     except OSError as ex:
         AUDIT.record("read_passive_findings", "error", args, error=str(ex)[:300])

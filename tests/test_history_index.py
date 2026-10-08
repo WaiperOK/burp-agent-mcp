@@ -202,5 +202,22 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(index.entries), 3)
 
 
+class SecretPathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_secret_in_path_is_masked_in_the_index(self):
+        items = [{"request": "GET /login?token=abc123&next=/home HTTP/1.1\r\nHost: app.test\r\n\r\n", "response": ""}]
+        index = HistoryIndex(max_records=500, page=10)
+        await index.refresh(FakeHistory(items).fetch)
+        self.assertEqual(index.entries[0].path, "/login?token=[REDACTED]&next=/home")
+
+    async def test_old_state_file_with_raw_secret_is_masked_on_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history_index.json"  # written by an earlier version, before masking existed
+            path.write_text('{"version": 1, "entries": [[0, "app.test", "GET", "/x?sid=raw123", null, "f"]]}',
+                            encoding="utf-8")
+            index = HistoryIndex(max_records=500, page=10, store=path)
+            self.assertTrue(index.load())
+            self.assertEqual(index.entries[0].path, "/x?sid=[REDACTED]")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 import httpmsg
 from httpmsg import MsgError
+from redact import mask_query
 
 CHECKS = ("auth", "ids", "malformed", "reflect")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -165,7 +166,7 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
         "hint": SEVERITY_HINT[kind],
         "check": probe.check,
         "method": method,
-        "url": probe.endpoint.origin + path,
+        "url": mask_query(probe.endpoint.origin + path),  # findings are stored and shown: no secrets in the URL
         "status": status,
         "baseline_status": base["status"] if base else None,
         "length": length,

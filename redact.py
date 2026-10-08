@@ -16,6 +16,21 @@ _HEADER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# URL query parameters that carry secrets. Matched by name, only as a whole parameter (after ? & or ;).
+SENSITIVE_QUERY_KEYS = (
+    "access_token", "refresh_token", "id_token", "token", "api_key", "apikey", "api-key",
+    "client_secret", "secret", "password", "passwd", "pwd", "session", "sessionid", "sid",
+    "jwt", "signature", "sig", "otp", "code", "key",
+)
+_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&;](?:" + "|".join(re.escape(k) for k in SENSITIVE_QUERY_KEYS) + r")=)[^&;\s\"'<>#]*")
+
+
+def mask_query(text: str) -> str:
+    """Replaces the values of secret URL parameters with [REDACTED]. Works on paths, request lines and JSON text."""
+    return _QUERY_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
+
+
 _PATTERNS = (
     (re.compile(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"), "[JWT]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[AWS_KEY]"),
@@ -36,6 +51,7 @@ _PHI_KEY_RE = re.compile(r'("(?:' + "|".join(PHI_KEYS) + r')"\s*:\s*)"(?:[^"\\]|
 def redact_text(text: str) -> str:
     """Hides sensitive headers, common secrets and personal data by JSON key."""
     text = _HEADER_RE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
+    text = mask_query(text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     return _PHI_KEY_RE.sub(lambda m: m.group(1) + '"[PHI]"', text)
