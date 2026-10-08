@@ -73,13 +73,37 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         await index.refresh(burp.fetch)  # max_age_s=0 checks Burp again
         self.assertEqual(len(index.entries), 6)
 
-    async def test_max_records_caps_the_index(self):
+    async def test_max_records_keeps_the_newest_records(self):
         burp = FakeHistory(record(i) for i in range(25))
         index = HistoryIndex(max_records=12, page=10)
         await index.refresh(burp.fetch)
-        self.assertEqual(len(index.entries), 12)
-        self.assertEqual(index.entries[-1].history_id, 11)
+        self.assertEqual([e.history_id for e in index.entries], list(range(13, 25)))
         self.assertTrue(index.complete)
+
+    async def test_records_added_after_the_window_filled_are_seen(self):
+        # the regression: the old index stopped at max_records and never saw traffic recorded later
+        burp = FakeHistory(record(i) for i in range(20))
+        index = HistoryIndex(max_records=12, page=10)
+        await index.refresh(burp.fetch)
+        burp.items.extend(record(i) for i in range(20, 25))
+        await index.refresh(burp.fetch)
+        self.assertEqual([e.history_id for e in index.entries], list(range(13, 25)))
+        self.assertEqual(index.entries[-1].path, "/api/item/24")
+
+    async def test_locating_the_window_takes_few_reads(self):
+        from history_index import _count_records
+        burp = FakeHistory(record(i) for i in range(1000))
+        self.assertEqual(await _count_records(burp.fetch), 1000)
+        self.assertLessEqual(len(burp.calls), 25)  # about 2*log2(n), not a scan of every page
+
+    async def test_history_replaced_by_a_shorter_one_starts_the_window_again(self):
+        burp = FakeHistory(record(i) for i in range(20))
+        index = HistoryIndex(max_records=12, page=10)
+        await index.refresh(burp.fetch)
+        burp.items = [record(100 + i, host="other.test") for i in range(5)]
+        await index.refresh(burp.fetch)
+        self.assertEqual([e.history_id for e in index.entries], list(range(5)))
+        self.assertEqual({e.host for e in index.entries}, {"other.test"})
 
 
 class ChangeTests(unittest.IsolatedAsyncioTestCase):

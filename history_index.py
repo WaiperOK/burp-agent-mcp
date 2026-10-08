@@ -9,6 +9,9 @@ gone or different, the history was cleared or replaced, and the index starts ove
 The first build of a large history takes many small pages, so a refresh stops after a time budget. The next
 refresh continues from the last indexed record.
 
+The index keeps the newest max_records records. A longer history loses its oldest records from the index, never its
+newest ones: new traffic is always visible, and complete=True means the index reached the end of Burp's history.
+
 The index can be saved to a file, so a restart does not rebuild it. A saved index is never trusted blindly: the
 first refresh after a load checks its last record against Burp, exactly as in a running session.
 """
@@ -60,13 +63,33 @@ def _entry(history_id: int, item: dict) -> Entry:
                  httpmsg.status_of(item.get("response") or ""), fingerprint(item))
 
 
+async def _count_records(fetch: PageFetch) -> int:
+    """How many records Burp holds. Doubles a probe until it passes the end, then bisects: about 2*log2(n) reads of
+    one record each, never a full scan."""
+    async def has(n: int) -> bool:  # True if there are at least n records
+        return bool(await fetch(n - 1, 1))
+
+    if not await has(1):
+        return 0
+    low, high = 1, 2  # has(low) is True; has(high) may be False
+    while await has(high):
+        low, high = high, high * 2
+    while high - low > 1:
+        mid = (low + high) // 2
+        if await has(mid):
+            low = mid
+        else:
+            high = mid
+    return low
+
+
 class HistoryIndex:
     def __init__(self, max_records: int, page: int = 10, on_reset: Callable[[], None] | None = None,
                  store: Path | None = None):
-        self.max_records = max_records  # the index covers history_ids below this value
+        self.max_records = max_records  # the index keeps this many of the newest records
         self.page = page
         self.entries: list[Entry] = []
-        self.complete = False  # True when the last refresh reached the end of history or max_records
+        self.complete = False  # True when the last refresh reached the end of Burp's history
         self.checked_at = 0.0  # monotonic time of the last refresh that completed
         self._on_reset = on_reset  # the caller drops anything it cached by history_id, which is now stale
         self._store = store  # file where the index is kept between runs; None keeps it in memory only
@@ -96,34 +119,42 @@ class HistoryIndex:
 
     async def _read_new(self, fetch: PageFetch, started: float, time_budget_s: float) -> None:
         self.complete = False
-        offset = 0
+        next_id = None  # None: the window of newest records has to be located first
         if self.entries:
             last = self.entries[-1]
             # the page starts at the last indexed record, so one call both checks it and reads the new ones
             page = await fetch(last.history_id, self.page)
             if page and fingerprint(page[0]) == last.fingerprint:
-                offset = self._add(last.history_id + 1, page[1:])
+                next_id = self._add(last.history_id + 1, page[1:])
             else:
-                self.reset()  # cleared, replaced or shorter: index again from the start
-        while offset < self.max_records:
+                self.reset()  # cleared, replaced or shorter: index again from the newest records
+        if next_id is None:
+            next_id = max(0, await _count_records(fetch) - self.max_records)
+        while True:
             if time.monotonic() - started >= time_budget_s:  # >= so that a zero budget always stops
+                self._trim()
                 return  # partial: the next refresh continues from the last indexed record
-            page = await fetch(offset, self.page)
+            page = await fetch(next_id, self.page)
             if not page:
                 break  # end of history
-            offset = self._add(offset, page)
+            next_id = self._add(next_id, page)
+        self._trim()
         self.complete = True
         self.checked_at = time.monotonic()
 
     def _add(self, first_id: int, records: list[dict]) -> int:
         """Indexes records whose history_ids start at first_id. Returns the next history_id to read."""
         for i, item in enumerate(records):
-            history_id = first_id + i
-            if history_id >= self.max_records:
-                return history_id
-            self.entries.append(_entry(history_id, item))
+            self.entries.append(_entry(first_id + i, item))
             self._dirty = True
         return first_id + len(records)
+
+    def _trim(self) -> None:
+        """Drops the oldest records once the index holds more than max_records."""
+        excess = len(self.entries) - self.max_records
+        if excess > 0:
+            del self.entries[:excess]
+            self._dirty = True
 
     def find(self, predicate: Callable[[Entry], bool], limit: int) -> tuple[list[Entry], int]:
         """The first `limit` matching entries in history order, and how many entries were examined."""
@@ -154,10 +185,10 @@ class HistoryIndex:
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as ex:
             log.warning("history index file ignored: %s", ex)
             return False
-        if any(e.history_id != i for i, e in enumerate(entries)):
-            log.warning("history index file ignored: record ids are not 0, 1, 2, ...")
+        if entries and any(e.history_id != entries[0].history_id + i for i, e in enumerate(entries)):
+            log.warning("history index file ignored: record ids are not consecutive")
             return False
-        self.entries = entries[:self.max_records]
+        self.entries = entries[max(0, len(entries) - self.max_records):]  # keep the newest records
         self.complete = False
         self._dirty = False
         return True
