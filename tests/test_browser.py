@@ -22,6 +22,9 @@ sys.path.insert(0, str(ROOT))
 from browser_guard import BrowserError, GuardedBrowser  # noqa: E402
 from policy import Policy, PolicyError  # noqa: E402
 
+# Empty: Playwright's bundled Chromium. Set to chrome to run these tests on an installed Google Chrome.
+TEST_BROWSER_CHANNEL = os.environ.get("BURP_AGENT_TEST_BROWSER_CHANNEL") or None
+
 TMP = tempfile.mkdtemp(prefix="burp-browser-test-")
 
 
@@ -115,6 +118,7 @@ def make_policy():
         "authorized_hosts": ["127.0.0.1"],
         "audit_log": f"{TMP}/audit.jsonl",
         "browser_proxy": None,
+        "browser_channel": TEST_BROWSER_CHANNEL,
         "browser_profile_dir": f"{TMP}/profile",
         "screenshots_dir": f"{TMP}/shots",
     }), encoding="utf-8")
@@ -227,6 +231,7 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
             "engagement_id": "TEST-BROWSER", "mode": "active", "environment": "test",
             "authorized_hosts": ["127.0.0.1"], "scope_urls": [f"{self.base}/next"],
             "audit_log": f"{TMP}/audit2.jsonl", "browser_proxy": None,
+            "browser_channel": TEST_BROWSER_CHANNEL,
             "browser_profile_dir": f"{TMP}/profile2", "screenshots_dir": f"{TMP}/shots2",
         }), encoding="utf-8")
         browser = GuardedBrowser(Policy.load(str(scoped_path)))

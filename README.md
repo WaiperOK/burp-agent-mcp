@@ -89,6 +89,8 @@ python3 -m venv .venv
 cp policy.example.json policy.json
 ```
 
+To drive an installed Google Chrome instead of the bundled Chromium, set `"browser_channel": "chrome"` in `policy.json` (`msedge` also works).
+
 Register the gateway in your MCP client as a stdio server:
 
 ```json
@@ -217,7 +219,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-281 tests across fourteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+287 tests across fourteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium (set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead). The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
@@ -245,7 +247,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 - Responses from targets reach the model, even after redaction. Do not use the gateway with real personal data without an agreement.
 - Port and scheme of history records are assumed to be HTTPS on 443 unless the Host header says otherwise. Anything outside the scope is skipped, not guessed.
 - Aggregates over Burp history are cached for 15 seconds. Use `fresh=true` to recompute.
-- The Proxy history index is reused for 5 seconds, so a search or endpoint summary can miss traffic captured in the last 5 seconds. `search_proxy_history` with `fresh=true` asks Burp again. The index covers the first `max_history_records` records (default 500). It is saved as `history_index.json` next to the audit log, readable only by you, and it is checked against Burp after a restart.
+- The Proxy history index is reused for 5 seconds, so a search or endpoint summary can miss traffic captured in the last 5 seconds. `search_proxy_history` with `fresh=true` asks Burp again. The index keeps the newest `max_history_records` records (default 500); older ones drop out of it, newer ones are always indexed. It is saved as `history_index.json` next to the audit log, readable only by you, and it is checked against Burp after a restart.
 
 ## License
 
