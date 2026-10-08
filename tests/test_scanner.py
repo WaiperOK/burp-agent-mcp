@@ -396,5 +396,26 @@ class SessionCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["session"], {"signed_in": 10, "refused": 0})
 
 
+class EmptyAnswerTests(unittest.TestCase):
+    """An empty answer is not a leak: {} or {"user":{}} without a session must not become a candidate."""
+
+    def test_has_data_ignores_empty_json(self):
+        self.assertFalse(scanner._has_data('{"user":{}}'))
+        self.assertFalse(scanner._has_data("[]"))
+        self.assertFalse(scanner._has_data("null"))
+        self.assertFalse(scanner._has_data(""))
+        self.assertTrue(scanner._has_data('{"status":"success","data":[{"id":1}]}'))
+        self.assertTrue(scanner._has_data("plain text answer"))
+
+    def test_auth_and_neighbour_candidates_need_data_in_the_answer(self):
+        ep = scanner.endpoint_from_raw(f"GET /rest/user/whoami HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n",
+                                       "history")
+        probe = scanner.Probe("auth", ep, ep.raw)
+        base = {"status": "200", "length": 50}
+        self.assertIsNone(scanner.judge(probe, "200", 11, '{"user":{}}', base))
+        self.assertEqual(scanner.judge(probe, "200", 20, '{"user":{"id":1}}', base)["candidate"],
+                         "auth_not_enforced_candidate")
+
+
 if __name__ == "__main__":
     unittest.main()

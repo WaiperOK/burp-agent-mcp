@@ -179,5 +179,13 @@ class FormPositionTests(unittest.TestCase):
             httpmsg.apply_position(raw, "form:nope", "x")
 
 
+class AnnotationsTailTests(unittest.TestCase):
+    def test_annotations_after_the_response_are_not_part_of_the_body(self):
+        raw = ("HttpRequestResponse{httpRequest=GET / HTTP/1.1\r\nHost: a\r\n\r\n, "
+               "httpResponse=HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"user\":{}}, "
+               "messageAnnotations=Annotations{comment='', highlightColor=NONE}}")
+        self.assertEqual(httpmsg.parse_reply(raw)["body"], '{"user":{}}')
+
+
 if __name__ == "__main__":
     unittest.main()

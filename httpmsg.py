@@ -66,7 +66,10 @@ def unwrap_response(raw: str) -> str:
     if at == -1:
         return raw
     text = raw[at + len(marker):]
-    return text[:-1] if text.endswith("}") else text  # the wrapper ends with one closing brace
+    annotations = text.find(", messageAnnotations=")  # Burp may add this field after the response
+    if annotations != -1:
+        return text[:annotations]
+    return text[:-1] if text.endswith("}") else text  # otherwise the wrapper ends with one closing brace
 
 
 def status_of(response: str) -> str | None:

@@ -172,6 +172,24 @@ def _is_login_like(path: str) -> bool:
     return bool(AUTH_RE.search(path.split("?", 1)[0]))
 
 
+def _has_data(text: str) -> bool:
+    """True if the answer carries something: an empty JSON object or list, null or nothing does not count."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    try:
+        value = json.loads(stripped)
+    except ValueError:
+        return True  # not JSON: any text is treated as content
+    def content(v) -> bool:
+        if isinstance(v, dict):
+            return any(content(x) for x in v.values())
+        if isinstance(v, list):
+            return any(content(x) for x in v)
+        return v is not None and v != ""
+    return content(value)
+
+
 def _is_static(path: str) -> bool:
     """Public static files (scripts, styles, images, fonts, UI translations). Without a session they are normal."""
     plain = path.split("?", 1)[0]
@@ -396,15 +414,15 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
     ep = probe.endpoint
     if probe.check == "baseline":
         is_json = "json" in content_type.lower()
-        if not ep.has_auth and status == "200" and length > 0 and is_json and not _is_static(ep.path):
+        if not ep.has_auth and status == "200" and is_json and _has_data(text) and not _is_static(ep.path):
             return _finding("anonymous_200_candidate", probe, status, length, None)
         return None
     if probe.check == "auth":
-        if status == "200" and length > 0 and base and base["status"] == "200":
+        if status == "200" and _has_data(text) and base and base["status"] == "200":
             return _finding("auth_not_enforced_candidate", probe, status, length, base)
         return None
     if probe.check == "ids":
-        if status == "200" and length > 0 and base and base["status"] == "200":
+        if status == "200" and _has_data(text) and base and base["status"] == "200":
             return _finding("neighbor_object_exists", probe, status, length, base)
         return None
     if probe.check == "malformed":
