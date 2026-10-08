@@ -73,11 +73,21 @@ class JudgeTests(unittest.TestCase):
         return scanner.Probe(check, self.ep, raw or GET_WITH_COOKIE, marker=marker)
 
     def test_auth_not_enforced(self):
-        f = scanner.judge(self._probe("auth"), "200", 30, "body", self.base)
+        f = scanner.judge(self._probe("auth"), "200", 30, '{"data": [1]}', self.base, "application/json")
         self.assertEqual(f["candidate"], "auth_not_enforced_candidate")
+        self.assertEqual(f["hint"], "low")  # a public-looking list with no person in it
 
     def test_auth_enforced_gives_nothing(self):
         self.assertIsNone(scanner.judge(self._probe("auth"), "401", 0, "", self.base))
+
+    def test_public_html_page_is_not_an_auth_candidate(self):
+        page = "<!DOCTYPE html><html><body>About our shop</body></html>"
+        self.assertIsNone(scanner.judge(self._probe("auth"), "200", len(page), page, self.base, "text/html; charset=utf-8"))
+
+    def test_html_page_naming_a_person_is_an_auth_candidate(self):
+        page = "<html><body>Signed in as tester@example.test</body></html>"
+        f = scanner.judge(self._probe("auth"), "200", len(page), page, self.base, "text/html")
+        self.assertEqual((f["candidate"], f["hint"]), ("auth_not_enforced_candidate", "high"))
 
     def test_server_error_on_malformed(self):
         f = scanner.judge(self._probe("malformed"), "500", 9, "x", self.base)
@@ -103,7 +113,7 @@ class OnFindingTests(unittest.IsolatedAsyncioTestCase):
         probes = scanner.build_probes([ep], ("auth",), 10)
 
         async def send(probe):  # the auth probe succeeds: authorization is not enforced
-            return "HTTP/1.1 200 OK\r\n\r\nbody"
+            return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\": [1]}"
 
         async def gate_wait(endpoint):
             return None
@@ -132,19 +142,19 @@ class ReproduceTests(unittest.IsolatedAsyncioTestCase):
                            max_requests=max_requests)
 
     async def test_candidate_that_reproduces_is_marked(self):
-        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\": [1]}"
         out = await self._run([ok, ok, ok])  # baseline, auth probe, then the repeat of the candidate
         self.assertTrue(out["findings"][0]["reproduced"])
 
     async def test_flaky_candidate_is_kept_but_marked(self):
-        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\": [1]}"
         denied = "HTTP/1.1 403 Forbidden\r\n\r\nno"
         out = await self._run([ok, ok, denied])  # the repeat is refused: the candidate is not confirmed
         self.assertEqual(len(out["findings"]), 1)
         self.assertFalse(out["findings"][0]["reproduced"])
 
     async def test_repeat_never_exceeds_the_scan_limit(self):
-        ok = "HTTP/1.1 200 OK\r\n\r\nbody"
+        ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\": [1]}"
         # the limit is spent by the baseline and the auth probe, so the repeat must be skipped, not sent
         out = await self._run([ok, ok], max_requests=2)
         self.assertEqual(out["sent"], 2)

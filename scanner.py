@@ -424,6 +424,17 @@ USER_DATA_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 USER_KEY_RE = re.compile(r'"(username|user_name|email|login)"\s*:', re.I)
 
 
+def _is_json_answer(text: str, content_type: str) -> bool:
+    """True for a JSON answer: by its Content-Type, or by a body that parses as JSON (some APIs send text/plain)."""
+    if "json" in content_type.lower():
+        return True
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return text.strip()[:1] in ("{", "[")
+
+
 def _user_specific(text: str) -> bool:
     """True if an answer names a person or an account: an owner id, an e-mail address or a user name."""
     return _owner(text) is not None or bool(USER_DATA_RE.search(text)) or bool(USER_KEY_RE.search(text))
@@ -497,7 +508,9 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
             return found("anonymous_200_candidate", hint="medium" if (sensitive or _user_specific(text)) else "low")
         return None
     if probe.check == "auth":
-        if status == "200" and _has_data(text) and base and base["status"] == "200":
+        # A public HTML or text page opens without a sign-in, so it counts only as JSON data or as a named person.
+        if status == "200" and base and base["status"] == "200" and _has_data(text) \
+                and (_is_json_answer(text, content_type) or _user_specific(text)):
             # high when the answer is someone's data; an answer with no person in it is only a low lead
             return found("auth_not_enforced_candidate", hint="high" if _user_specific(text) else "low")
         return None
