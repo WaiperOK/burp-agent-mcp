@@ -1358,6 +1358,7 @@ async def scan_status(job_id: str) -> dict:
         "errors": res["errors"],
         "elapsed_s": round(time.time() - job["started"]),
         "stopped": res["stopped"],
+        "groups": scanner.group_findings(res["findings"]),  # the same problem on one path is one row
         "findings": res["findings"][-100:],
         "findings_total": len(res["findings"]),
     })

@@ -35,7 +35,9 @@ CHECKS = ("auth", "ids", "malformed", "reflect", "params", "post")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 PUSHBACK = (429, 503)
 # Candidates from these checks are sent once more to see whether they reproduce.
-REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect", "params_quote", "params_bool", "post_quote", "post_reflect")
+REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect", "params_quote", "params_bool")
+# A POST probe changes data on the target, so its candidates are never sent a second time automatically.
+NO_REPEAT_CHECKS = ("post_quote", "post_reflect")
 MAX_ERRORS = 5
 _AUTH = ("cookie", "authorization")
 # Parameter and field names that carry secrets: never probed, and a body with such a field is never sent.
@@ -315,6 +317,30 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
     }
 
 
+def group_findings(findings: list[dict]) -> list[dict]:
+    """One row per kind, method and path, with the number of hits and how many were repeated and confirmed.
+
+    The same problem on one path (a quote in each parameter of an endpoint, say) becomes one row, not many.
+    """
+    rows: dict[tuple, dict] = {}
+    for f in findings:
+        path = f["url"].split("?", 1)[0]
+        method = f.get("method", "")
+        row = rows.setdefault((f["candidate"], method, path), {
+            "candidate": f["candidate"], "method": method, "path": path, "example_url": f["url"],
+            "count": 0, "statuses": set(), "notes": [], "repeated": 0, "confirmed": 0})
+        row["count"] += 1
+        if f.get("status"):
+            row["statuses"].add(f["status"])
+        if f.get("note") and f["note"] not in row["notes"] and len(row["notes"]) < 5:
+            row["notes"].append(f["note"])
+        if f.get("reproduced") is not None:
+            row["repeated"] += 1
+            row["confirmed"] += 1 if f["reproduced"] else 0
+    out = [{**row, "statuses": sorted(row["statuses"])} for row in rows.values()]
+    return sorted(out, key=lambda r: (-r["count"], r["candidate"], r["path"]))
+
+
 def judge(probe: Probe, status: str | None, length: int, text: str, base: dict | None,
           content_type: str = "") -> dict | None:
     """Decides whether there is a candidate. base is the baseline result for the same endpoint.
@@ -442,6 +468,9 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
                 # result["sent"] already counts this probe; reserve one slot per probe still unsent
                 spare = None if max_requests is None else max_requests - result["sent"] - (len(probes) - index - 1)
                 await _reproduce(finding, probe, base, send, gate_wait, audit, result, min_delay_s, spare)
+            elif probe.check in NO_REPEAT_CHECKS:
+                finding["reproduced"] = None
+                finding["reproduce_error"] = "not repeated: a POST request changes data on the target"
             result["findings"].append(finding)
             if on_finding is not None:
                 on_finding(finding)

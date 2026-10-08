@@ -177,7 +177,7 @@ The `post` check sends POST requests, so it needs `POST` in the policy's `allowe
 
 To scan as a signed-in user, run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. The gateway never types passwords. Requests recorded from that session carry the login, and the authorization probes use them.
 
-Each candidate is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet.
+Each candidate from a GET request is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet. Candidates from POST requests are not repeated, because a second POST would change data on the target again. `scan_status` also returns `groups`: the same problem on one path as one row, with a count.
 
 Requests are limited by `scan_max_requests` and paced by `scan_min_delay_ms`. The scanner stops on 429 or 503, after a series of errors, or when asked. Findings go to `scan_findings.jsonl` with owner-only permissions.
 
@@ -213,7 +213,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-241 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+243 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

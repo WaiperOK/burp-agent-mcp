@@ -307,5 +307,30 @@ class EmptyValueAndNoiseTests(unittest.TestCase):
         self.assertIsNone(scanner.judge(probe, "200", 50, "<html></html>", None, "text/html"))
 
 
+class GroupAndRepeatTests(unittest.TestCase):
+    def _finding(self, url: str, reproduced, note: str = "quote in parameter q") -> dict:
+        return {"candidate": "sql_error_candidate", "method": "GET", "url": url, "status": "500",
+                "note": note, "reproduced": reproduced}
+
+    def test_same_problem_on_one_path_is_one_row(self):
+        rows = scanner.group_findings([
+            self._finding("https://h/api/x?a=1", True, "quote in parameter a"),
+            self._finding("https://h/api/x?b=1", None, "quote in parameter b"),
+            self._finding("https://h/api/x?c=1", False, "quote in parameter c"),
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["count"], 3)
+        self.assertEqual(rows[0]["repeated"], 2)  # the one with None was not repeated
+        self.assertEqual(rows[0]["confirmed"], 1)
+        self.assertEqual(rows[0]["path"], "https://h/api/x")
+        self.assertEqual(rows[0]["statuses"], ["500"])
+        self.assertEqual(len(rows[0]["notes"]), 3)
+
+    def test_different_paths_stay_separate(self):
+        rows = scanner.group_findings([self._finding("https://h/api/x?a=1", True),
+                                       self._finding("https://h/api/y?a=1", True)])
+        self.assertEqual(sorted(r["path"] for r in rows), ["https://h/api/x", "https://h/api/y"])
+
+
 if __name__ == "__main__":
     unittest.main()

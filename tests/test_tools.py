@@ -774,6 +774,11 @@ class ActiveScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("POST", self.sent_methods)
         boolean = [f for f in status["findings"] if f["candidate"] == "sql_boolean_candidate"]
         self.assertEqual([f["reproduced"] for f in boolean], [True])  # the repeat gave the same result
+        post = [f for f in status["findings"] if f["check"].startswith("post")]
+        self.assertEqual(len(post), 2)
+        self.assertEqual({f["reproduced"] for f in post}, {None})  # POST candidates are never sent again
+        self.assertEqual(self.sent_methods.count("POST"), 2)  # one quote and one marker, nothing more
+        self.assertIn("sql_error_candidate", {g["candidate"] for g in status["groups"]})
 
     async def test_post_is_not_sent_without_the_post_check(self):
         await self.run_scan("params,reflect")
