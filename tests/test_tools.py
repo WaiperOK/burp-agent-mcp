@@ -781,5 +781,29 @@ class ActiveScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(self.sent_methods), {"GET"})
 
 
+class ReplyViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_comes_as_fields_and_cookies_are_hidden(self):
+        original = server._upstream
+
+        async def reply(tool, arguments):
+            if tool == "send_http1_request":
+                return ("HttpRequestResponse{httpRequest=GET /api/patients HTTP/1.1\r\nHost: x\r\n\r\n, "
+                        "httpResponse=HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                        "Set-Cookie: session=abc123\r\n\r\n{\"ok\": true}}")
+            return await original(tool, arguments)
+
+        server._upstream = reply
+        try:
+            out = await server.request_url("https://ehealth.test.local/api/patients", reason="check reply fields")
+        finally:
+            server._upstream = original
+        self.assertEqual(out["status"], "200")
+        self.assertEqual(out["headers"]["content-type"], "application/json")
+        self.assertEqual(out["headers"]["set-cookie"], "[REDACTED]")
+        self.assertIn('"ok": true', out["body"])
+        self.assertNotIn("abc123", json.dumps(out))
+        self.assertNotIn("response", out)  # the raw wrapper is no longer returned
+
+
 if __name__ == "__main__":
     unittest.main()

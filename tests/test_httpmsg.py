@@ -152,5 +152,18 @@ class BurpReplyTests(unittest.TestCase):
         self.assertEqual(httpmsg.status_of(plain), "200")
 
 
+class ParseReplyTests(unittest.TestCase):
+    def test_wrapped_reply_is_split_into_fields(self):
+        raw = ("HttpRequestResponse{httpRequest=GET / HTTP/1.1\r\nHost: a\r\n\r\n, "
+               "httpResponse=HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n"
+               "Set-Cookie: s=1\r\n\r\n{\"e\": 1}}")
+        out = httpmsg.parse_reply(raw)
+        self.assertEqual(out["status"], "404")
+        self.assertEqual(out["reason"], "Not Found")
+        self.assertEqual(out["headers"]["content-type"], "application/json")
+        self.assertEqual(out["headers"]["set-cookie"], "s=1")
+        self.assertEqual(out["body"], '{"e": 1}')
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -91,7 +91,8 @@ class JudgeTests(unittest.TestCase):
 
     def test_baseline_anonymous_only_for_endpoints_without_auth(self):
         anon_ep = scanner.endpoint_from_raw(f"GET /api/public HTTP/1.1\r\nHost: {HOST}\r\n\r\n", "history")
-        f = scanner.judge(scanner.Probe("baseline", anon_ep, anon_ep.raw), "200", 50, "x", None)
+        f = scanner.judge(scanner.Probe("baseline", anon_ep, anon_ep.raw), "200", 50, "x", None,
+                         "application/json")
         self.assertEqual(f["candidate"], "anonymous_200_candidate")
         self.assertIsNone(scanner.judge(self._probe("baseline"), "200", 50, "x", None))
 
@@ -282,6 +283,28 @@ class BurpReplyScanTests(unittest.TestCase):
         probe = next(p for p in scanner.build_probes([ep], ("params",), 50) if p.check == "params_quote")
         out = scanner.judge(probe, scanner._status(self.WRAPPED), 40, scanner._body(self.WRAPPED), None)
         self.assertEqual(out["candidate"], "sql_error_candidate")
+
+
+class EmptyValueAndNoiseTests(unittest.TestCase):
+    def _get(self, path: str):
+        return scanner.endpoint_from_raw(f"GET {path} HTTP/1.1\r\nHost: {HOST}\r\n\r\n", "history")
+
+    def test_empty_parameter_takes_the_value_seen_elsewhere_in_the_run(self):
+        probes = scanner.build_probes([self._get("/rest/products/search?q="), self._get("/rest/products/search?q=apple")],
+                                      ("params",), 50)
+        quote = next(p for p in probes if p.check == "params_quote" and "q=" in p.raw.split("\r\n")[0])
+        self.assertIn("q=apple%27", quote.raw.split("\r\n")[0])
+
+    def test_empty_parameter_falls_back_when_nothing_is_known(self):
+        probes = scanner.build_probes([self._get("/rest/products/search?q=")], ("params",), 50)
+        quote = next(p for p in probes if p.check == "params_quote")
+        self.assertIn(f"q={scanner.FALLBACK_PARAM_VALUE}%27", quote.raw.split("\r\n")[0])
+
+    def test_anonymous_page_is_reported_only_when_it_is_json(self):
+        anon = self._get("/rest/languages")
+        probe = scanner.Probe("baseline", anon, anon.raw)
+        self.assertIsNotNone(scanner.judge(probe, "200", 50, "x", None, "application/json; charset=utf-8"))
+        self.assertIsNone(scanner.judge(probe, "200", 50, "<html></html>", None, "text/html"))
 
 
 if __name__ == "__main__":

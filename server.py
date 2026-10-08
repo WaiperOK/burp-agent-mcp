@@ -41,7 +41,7 @@ from browser_guard import BrowserError, GuardedBrowser
 from history_index import Entry, HistoryIndex, fingerprint
 from httpmsg import MsgError
 from policy import Gate, Policy, PolicyError, RateLimitError
-from redact import mask_query, redact_text, truncate
+from redact import SENSITIVE_HEADERS, mask_query, redact_text, truncate
 from upstream import UpstreamClient, UpstreamError
 
 UPSTREAM_TIMEOUT = 60
@@ -87,6 +87,23 @@ async def _upstream(tool: str, arguments: dict) -> str:
 def _envelope(data: dict) -> dict:
     """All data from targets is marked untrusted: it is data, not instructions."""
     return {"untrusted_target_data": True, **data}
+
+
+REPLY_HEADER_CHARS = 300  # a header value longer than this is cut: long values are rarely useful
+
+
+def _reply_view(raw: str) -> dict:
+    """What the model gets from a Burp send reply: status, headers and body.
+
+    Cookies and authorization headers are replaced by [REDACTED]. URL parameters with secrets are masked. The body
+    goes through the same redaction and truncation as history records.
+    """
+    parsed = httpmsg.parse_reply(raw)
+    headers = {name: "[REDACTED]" if name in SENSITIVE_HEADERS else mask_query(value)[:REPLY_HEADER_CHARS]
+               for name, value in parsed["headers"].items()}
+    body, cut = truncate(redact_text(parsed["body"]), POLICY.max_response_chars)
+    return {"status": parsed["status"], "reason": parsed["reason"], "headers": headers,
+            "body": body, "body_truncated": cut}
 
 
 _POLICY_FILE = Path(_POLICY_PATH)
@@ -863,10 +880,9 @@ async def send_request(host: str, port: int, use_https: bool, raw_request: str, 
         AUDIT.record("send_request", "error", audit_args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
 
-    text, cut = truncate(redact_text(raw), POLICY.max_response_chars)
-    status = httpmsg.status_of(raw)
-    AUDIT.record("send_request", "allow", audit_args, summary={"status": status, "response_chars": len(raw)})
-    return _envelope({"status": status, "response": text, "truncated": cut})
+    view = _reply_view(raw)
+    AUDIT.record("send_request", "allow", audit_args, summary={"status": view["status"], "response_chars": len(raw)})
+    return _envelope(view)
 
 
 @mcp.tool()
@@ -915,10 +931,9 @@ async def replay_variant(history_id: int, reason: str, path: str | None = None, 
         AUDIT.record("replay_variant", "error", audit_args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
 
-    text, cut = truncate(redact_text(raw), POLICY.max_response_chars)
-    status = httpmsg.status_of(raw)
-    AUDIT.record("replay_variant", "allow", audit_args, summary={"status": status, "response_chars": len(raw)})
-    return _envelope({"status": status, "response": text, "truncated": cut})
+    view = _reply_view(raw)
+    AUDIT.record("replay_variant", "allow", audit_args, summary={"status": view["status"], "response_chars": len(raw)})
+    return _envelope(view)
 
 
 def _read_payload_file(name: str) -> list[str]:
@@ -1114,10 +1129,9 @@ async def request_url(url: str, reason: str, method: str = "GET", headers: dict[
     except UpstreamError as ex:
         AUDIT.record("request_url", "error", audit_args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
-    text, cut = truncate(redact_text(resp), POLICY.max_response_chars)
-    status = httpmsg.status_of(resp)
-    AUDIT.record("request_url", "allow", audit_args, summary={"status": status, "response_chars": len(resp)})
-    return _envelope({"status": status, "response": text, "truncated": cut})
+    view = _reply_view(resp)
+    AUDIT.record("request_url", "allow", audit_args, summary={"status": view["status"], "response_chars": len(resp)})
+    return _envelope(view)
 
 
 CHECK_NAMES = tuple(scanner.CHECKS)

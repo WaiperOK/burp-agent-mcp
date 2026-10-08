@@ -48,6 +48,7 @@ STATIC_FILE_RE = re.compile(r"\.(js|mjs|css|png|jpe?g|gif|svg|ico|webp|woff2?|tt
 # A boolean condition that is always true returns at least this many times the baseline size (plus a margin).
 BOOL_GROWTH = 1.5
 BOOL_MARGIN = 200
+FALLBACK_PARAM_VALUE = "test"  # used for a query parameter when no non-empty value was seen anywhere in the run
 SEVERITY_HINT = {
     "anonymous_200_candidate": "medium",
     "auth_not_enforced_candidate": "high",
@@ -180,13 +181,28 @@ def _has_credentials(obj) -> bool:
     return isinstance(obj, str) and bool(re.match(r"eyJ[A-Za-z0-9_-]{5,}\.", obj))
 
 
-def _param_probes(ep: Endpoint) -> list[Probe]:
-    """A quote and an always-true condition in each query parameter. Credential-like names are skipped."""
+def _known_param_values(endpoints: list[Endpoint]) -> dict:
+    """First non-empty value seen for each query parameter name, over all endpoints of the run."""
+    known: dict[str, str] = {}
+    for ep in endpoints:
+        for name, value in _query_pairs(ep.path):
+            if value and name not in known:
+                known[name] = value
+    return known
+
+
+def _param_probes(ep: Endpoint, known: dict) -> list[Probe]:
+    """A quote and an always-true condition in each query parameter. Credential-like names are skipped.
+
+    An empty value makes a weak probe: a quote after nothing is not a quote inside a word. So the value seen
+    elsewhere in the run for the same name is used, and FALLBACK_PARAM_VALUE when there is none.
+    """
     out, seen = [], set()
     for name, value in _query_pairs(ep.path):
         if name in seen or CREDENTIAL_NAME_RE.search(name):
             continue
         seen.add(name)
+        value = value or known.get(name) or FALLBACK_PARAM_VALUE
         try:
             out.append(Probe("params_quote", ep, httpmsg.apply_position(ep.raw, f"query:{name}", value + "'"),
                              note=f"quote in parameter {name}"))
@@ -226,10 +242,11 @@ def _post_probes(ep: Endpoint) -> list[Probe]:
     return out
 
 
-def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
+def _bundle(ep: Endpoint, checks: tuple, known: dict | None = None) -> list[Probe]:
     """All probes of one endpoint. A POST endpoint gets only the POST checks: its recorded request is not re-sent."""
     if ep.method == "POST":
         return _post_probes(ep) if "post" in checks else []
+    known = known or {}
     out = [Probe("baseline", ep, ep.raw)]
     if "auth" in checks and ep.has_auth and not _is_static(ep.path):
         out.append(Probe("auth", ep, _strip_auth(ep.raw), note="without Cookie/Authorization"))
@@ -247,7 +264,7 @@ def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
         marker = "zq" + secrets.token_hex(4)
         out.append(Probe("reflect", ep, _with_query(ep.raw, marker), marker=marker))
     if "params" in checks:
-        out.extend(_param_probes(ep))
+        out.extend(_param_probes(ep, known))
     return out
 
 
@@ -260,8 +277,9 @@ def build_probes(endpoints: list[Endpoint], checks: tuple, max_requests: int) ->
     if unknown:
         raise MsgError(f"unknown checks: {sorted(unknown)}; allowed: {CHECKS}")
     chosen: list[Probe] = []
+    known = _known_param_values(endpoints)
     for ep in endpoints:
-        bundle = _bundle(ep, checks)
+        bundle = _bundle(ep, checks, known)
         if len(chosen) + len(bundle) > max_requests:
             if not chosen:
                 chosen = bundle[:max_requests]
@@ -276,6 +294,10 @@ def _status(resp: str) -> str | None:
 
 def _body(resp: str) -> str:
     return httpmsg.unwrap_response(resp).replace("\r\n", "\n").partition("\n\n")[2]
+
+
+def _content_type(resp: str) -> str:
+    return httpmsg.parse_reply(resp)["headers"].get("content-type", "")
 
 
 def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dict | None) -> dict:
@@ -293,11 +315,17 @@ def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dic
     }
 
 
-def judge(probe: Probe, status: str | None, length: int, text: str, base: dict | None) -> dict | None:
-    """Decides whether there is a candidate. base is the baseline result for the same endpoint."""
+def judge(probe: Probe, status: str | None, length: int, text: str, base: dict | None,
+          content_type: str = "") -> dict | None:
+    """Decides whether there is a candidate. base is the baseline result for the same endpoint.
+
+    content_type is the response's Content-Type. An anonymous page that is HTML or an image is normal and is not
+    reported: only an anonymous JSON answer counts as a possible missing check.
+    """
     ep = probe.endpoint
     if probe.check == "baseline":
-        if not ep.has_auth and status == "200" and length > 0 and not _is_static(ep.path):
+        is_json = "json" in content_type.lower()
+        if not ep.has_auth and status == "200" and length > 0 and is_json and not _is_static(ep.path):
             return _finding("anonymous_200_candidate", probe, status, length, None)
         return None
     if probe.check == "auth":
@@ -353,7 +381,7 @@ async def _reproduce(finding: dict, probe: Probe, base: dict | None, send, gate_
     result["sent"] += 1
     status = _status(again)
     text = _body(again)
-    finding["reproduced"] = judge(probe, status, len(text), text, base) is not None
+    finding["reproduced"] = judge(probe, status, len(text), text, base, _content_type(again)) is not None
     finding["second_status"] = status
     audit({"check": probe.check, "reproduce": True, "status": status})
     await asyncio.sleep(min_delay_s)
@@ -408,7 +436,7 @@ async def run(probes: list[Probe], send, gate_wait, audit, *, min_delay_s: float
         if probe.check == "baseline":
             result["baseline"][probe.endpoint.key] = {"status": status, "length": length}
         base = result["baseline"].get(probe.endpoint.key)
-        finding = judge(probe, status, length, text, base)
+        finding = judge(probe, status, length, text, base, _content_type(resp))
         if finding:
             if probe.check in REPRODUCE_CHECKS:
                 # result["sent"] already counts this probe; reserve one slot per probe still unsent

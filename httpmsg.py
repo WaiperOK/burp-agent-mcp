@@ -83,6 +83,24 @@ def header_of(head: str, name: str) -> str:
     return ""
 
 
+def parse_reply(raw: str) -> dict:
+    """A Burp send reply split into fields: status, reason, headers (lower-case names) and body.
+
+    The reply is unwrapped first. The body is everything after the header block, as text.
+    """
+    text = unwrap_response(raw).replace("\r\n", "\n")
+    head, _, body = text.partition("\n\n")
+    lines = head.split("\n")
+    m = re.match(r"HTTP/[\d.]+\s+(\d{3})\s*(.*)$", lines[0]) if lines else None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, sep, value = line.partition(":")
+        if sep and name.strip():
+            headers.setdefault(name.strip().lower(), value.strip())
+    return {"status": m.group(1) if m else None, "reason": m.group(2).strip() if m else "",
+            "headers": headers, "body": body}
+
+
 def json_fragment(fragment: str) -> str:
     """Decodes a truncated JSON string fragment; an unfinished escape at the end is dropped."""
     fragment = _TRUNC_RE.sub("", fragment)
