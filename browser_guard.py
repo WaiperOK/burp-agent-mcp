@@ -136,6 +136,9 @@ class GuardedBrowser:
                 except Exception as ex:  # a page that fails is reported; the crawl goes on
                     visited.append({"url": url, "error": type(ex).__name__})
                     continue
+                if urlsplit(page.url).netloc != origin:  # a redirect pointed off the target: the guard cut it there
+                    visited.append({"url": page.url, "left_target": True})
+                    continue
                 visited.append({"url": page.url})
                 if depth >= max_depth:
                     continue
