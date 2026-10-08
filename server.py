@@ -64,8 +64,10 @@ AUDIT = AuditLog(POLICY.audit_log, POLICY.engagement_id)
 UPSTREAM = UpstreamClient(POLICY.upstream_sse_url, call_timeout=UPSTREAM_TIMEOUT)
 BROWSER = GuardedBrowser(POLICY)
 _ITEM_CACHE: OrderedDict[int, dict] = OrderedDict()
-HISTORY = HistoryIndex(max_records=POLICY.max_history_records, page=HISTORY_PAGE,
-                       on_reset=_ITEM_CACHE.clear)  # see history_index.py
+# The index is kept next to the audit log, so a restart does not rebuild it (see history_index.py).
+HISTORY = HistoryIndex(max_records=POLICY.max_history_records, page=HISTORY_PAGE, on_reset=_ITEM_CACHE.clear,
+                       store=Path(POLICY.audit_log).expanduser().with_name("history_index.json"))
+HISTORY.load()
 mcp = FastMCP("burp-agent")
 
 # The policy version in use: its hash is in the audit log, so a file edit is visible.

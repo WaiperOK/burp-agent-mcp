@@ -13,5 +13,6 @@ policy.json.bak-*
 audit.jsonl
 findings.jsonl
 scan_findings.jsonl
+history_index.json
 burp_agent_*/
 *.tmp

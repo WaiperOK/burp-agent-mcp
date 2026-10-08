@@ -1,6 +1,7 @@
 """Tests for the incremental Proxy history index, against a fake Burp history. Run: python tests/test_history_index.py"""
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -145,6 +146,60 @@ class FindTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(index.entries), 2)
         found, _ = index.find(lambda e: e.host == "app.test", limit=10)
         self.assertEqual([e.history_id for e in found], [1])
+
+
+class PersistenceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "history_index.json"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    async def test_saved_index_is_reused_after_restart(self):
+        burp = FakeHistory(record(i) for i in range(25))
+        first = HistoryIndex(max_records=500, page=10, store=self.path)
+        await first.refresh(burp.fetch)
+        self.assertTrue(self.path.is_file())
+        restarted = HistoryIndex(max_records=500, page=10, store=self.path)
+        self.assertTrue(restarted.load())
+        self.assertEqual(len(restarted.entries), 25)
+        burp.calls.clear()
+        await restarted.refresh(burp.fetch)
+        self.assertEqual(len(burp.calls), 2)  # only the check of the last record and the end: nothing is rebuilt
+        self.assertEqual(restarted.entries, first.entries)
+
+    async def test_history_cleared_while_stopped_is_detected(self):
+        burp = FakeHistory(record(i) for i in range(25))
+        await HistoryIndex(max_records=500, page=10, store=self.path).refresh(burp.fetch)
+        burp.items = [record(i, host="other.test") for i in range(3)]  # cleared and refilled, shorter
+        restarted = HistoryIndex(max_records=500, page=10, store=self.path)
+        restarted.load()
+        await restarted.refresh(burp.fetch)
+        self.assertEqual(len(restarted.entries), 3)
+        self.assertEqual({e.host for e in restarted.entries}, {"other.test"})
+
+    async def test_corrupt_or_inconsistent_file_is_ignored(self):
+        index = HistoryIndex(max_records=500, page=10, store=self.path)
+        self.path.write_text("{not json", encoding="utf-8")
+        self.assertFalse(index.load())
+        self.path.write_text('{"version": 1, "entries": [[0, "a", "GET", "/", null, "x"], [5, "a", "GET", "/", null, "y"]]}',
+                             encoding="utf-8")  # the ids have a gap
+        self.assertFalse(index.load())
+        self.assertEqual(index.entries, [])
+
+    async def test_state_file_is_readable_only_by_owner(self):
+        burp = FakeHistory(record(i) for i in range(3))
+        await HistoryIndex(max_records=500, page=10, store=self.path).refresh(burp.fetch)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    async def test_failed_save_does_not_fail_the_refresh(self):
+        burp = FakeHistory(record(i) for i in range(3))
+        blocker = Path(self._tmp.name) / "a-file"
+        blocker.write_text("x", encoding="utf-8")  # a file where the directory should be
+        index = HistoryIndex(max_records=500, page=10, store=blocker / "history_index.json")
+        await index.refresh(burp.fetch)
+        self.assertEqual(len(index.entries), 3)
 
 
 if __name__ == "__main__":

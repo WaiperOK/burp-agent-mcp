@@ -196,7 +196,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 ./run_tests.sh
 ```
 
-177 tests across twelve suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+182 tests across twelve suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
@@ -224,7 +224,7 @@ The extension writes only for hosts listed in `~/burp_agent_findings/scope.txt`,
 - Responses from targets reach the model, even after redaction. Do not use the gateway with real personal data without an agreement.
 - Port and scheme of history records are assumed to be HTTPS on 443 unless the Host header says otherwise. Anything outside the scope is skipped, not guessed.
 - Aggregates over Burp history are cached for 15 seconds. Use `fresh=true` to recompute.
-- The Proxy history index is reused for 5 seconds, so a search or endpoint summary can miss traffic captured in the last 5 seconds. `search_proxy_history` with `fresh=true` asks Burp again. The index covers the first `max_history_records` records (default 500).
+- The Proxy history index is reused for 5 seconds, so a search or endpoint summary can miss traffic captured in the last 5 seconds. `search_proxy_history` with `fresh=true` asks Burp again. The index covers the first `max_history_records` records (default 500). It is saved as `history_index.json` next to the audit log, readable only by you, and it is checked against Burp after a restart.
 
 ## License
 
