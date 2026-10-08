@@ -1,39 +1,61 @@
 """URL scanner: several checks per endpoint; all requests go through Burp and the gateway gate.
 
-Only idempotent methods (GET, HEAD, OPTIONS): the scanner never writes to the target.
+By default only idempotent methods (GET, HEAD, OPTIONS) are probed. POST endpoints are probed only when the
+run asks for the "post" check and the policy allows POST (the caller passes the allowed methods in).
 Checks:
-  baseline   - the original request; anonymous access to the endpoint without authorization (candidate)
-  auth       - the same request without Cookie/Authorization: 200 with a body means authorization is not enforced (candidate)
-  ids        - neighbouring numeric ids (N-1, N+1): 200 means objects can be enumerated (candidate for IDOR, verify by hand)
-  malformed  - a quote instead of a numeric id: 5xx means an unhandled error (candidate)
-  reflect    - a unique marker in a query parameter: reflected in the response means reflected input (candidate)
+  baseline      - the original request; anonymous access to the endpoint without authorization (candidate)
+  auth          - the same request without Cookie/Authorization: 200 with a body means authorization is not enforced
+  ids           - neighbouring numeric ids (N-1, N+1): 200 means objects can be enumerated (candidate for IDOR)
+  malformed     - a quote instead of a numeric id: 5xx means an unhandled error (candidate)
+  reflect       - a unique marker in a query parameter: reflected in the response means reflected input (candidate)
+  params        - each query parameter (not credential-like): a quote gives SQL errors or 5xx; a condition that is
+                  always true gives a much longer response than the baseline (candidate for SQL injection)
+  post          - each string field of a JSON POST body (not credential-like): a quote gives SQL errors or 5xx;
+                  a marker that comes back in the response means reflected input (candidate)
 
-Every finding is a candidate for manual review, not a confirmed vulnerability. Response bodies are not returned.
+Login, registration, password and token endpoints are never probed by the "post" check, and a body that carries
+a password or token field is never sent. Every finding is a candidate for manual review, not a confirmed
+vulnerability. Response bodies are not returned.
 """
 
 import asyncio
+import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, replace
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 import httpmsg
 from httpmsg import MsgError
+from intruder import AUTH_RE
 from redact import mask_query
 
-CHECKS = ("auth", "ids", "malformed", "reflect")
+CHECKS = ("auth", "ids", "malformed", "reflect", "params", "post")
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 PUSHBACK = (429, 503)
 # Candidates from these checks are sent once more to see whether they reproduce.
-REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect")
+REPRODUCE_CHECKS = ("auth", "ids", "malformed", "reflect", "params_quote", "params_bool", "post_quote", "post_reflect")
 MAX_ERRORS = 5
 _AUTH = ("cookie", "authorization")
+# Parameter and field names that carry secrets: never probed, and a body with such a field is never sent.
+CREDENTIAL_NAME_RE = re.compile(r"pass|pwd|secret|token|otp|mfa|card|iban|passport|cvv|key|session|auth|pin", re.I)
+# Database error texts (SQLite, MySQL, PostgreSQL, Oracle, Sequelize) that show an unescaped quote reached SQL.
+SQL_ERROR_RE = re.compile(
+    r"SQLITE_|SQLSTATE|syntax error|unterminated|SequelizeDatabaseError|ORA-\d{5}|"
+    r"You have an error in your SQL|mysql_|pg_query|Unclosed quotation", re.I)
+STATIC_FILE_RE = re.compile(r"\.(js|mjs|css|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|map|mp3|mp4)$", re.I)
+# A boolean condition that is always true returns at least this many times the baseline size (plus a margin).
+BOOL_GROWTH = 1.5
+BOOL_MARGIN = 200
 SEVERITY_HINT = {
     "anonymous_200_candidate": "medium",
     "auth_not_enforced_candidate": "high",
     "neighbor_object_exists": "info",
     "server_error_on_malformed_input": "low",
     "reflected_input_candidate": "low",
+    "sql_error_candidate": "high",
+    "sql_boolean_candidate": "high",
 }
 
 
@@ -68,11 +90,11 @@ class Probe:
     note: str = ""
 
 
-def endpoint_from_raw(raw: str, source: str) -> Endpoint:
+def endpoint_from_raw(raw: str, source: str, methods: tuple = SAFE_METHODS) -> Endpoint:
     """Endpoint from a history record. Port and scheme are not stored in history: taken from Host, default https/443."""
     method, path = httpmsg.split_request(raw)
-    if method not in SAFE_METHODS:
-        raise MsgError(f"scanner sends only {SAFE_METHODS}, got {method}")
+    if method not in methods:
+        raise MsgError(f"scanner sends only {methods}, got {method}")
     host_line = next((l for l in raw.replace("\r\n", "\n").split("\n")[1:] if l.lower().startswith("host:")), "")
     host_value = host_line.partition(":")[2].strip().lower()
     host, _, port_text = host_value.partition(":")
@@ -83,13 +105,13 @@ def endpoint_from_raw(raw: str, source: str) -> Endpoint:
                     has_auth=has_auth, source=source)
 
 
-def endpoint_in_scope(raw: str, source: str, in_scope) -> Endpoint | None:
+def endpoint_in_scope(raw: str, source: str, in_scope, methods: tuple = SAFE_METHODS) -> Endpoint | None:
     """Endpoint from a history record that the scope allows, or None.
 
     History does not say whether a connection was HTTP or HTTPS. If the Host header names a port, both schemes
     are tried, and the one that the scope allows is used. Without a port, the HTTPS default is the only guess.
     """
-    ep = endpoint_from_raw(raw, source)
+    ep = endpoint_from_raw(raw, source, methods)
     host_value = next((l for l in raw.replace("\r\n", "\n").split("\n")[1:] if l.lower().startswith("host:")), "")
     candidates = [ep]
     if ":" in host_value.partition(":")[2]:  # an explicit port is in the Host header
@@ -128,10 +150,88 @@ def _with_query(raw: str, marker: str) -> str:
     return httpmsg.build_request(raw, method, new_path)
 
 
+def _query_pairs(path: str) -> list[tuple[str, str]]:
+    """Decoded (name, value) pairs of the query string, in order."""
+    query = path.partition("?")[2]
+    pairs = []
+    for piece in query.split("&") if query else []:
+        name, _, value = piece.partition("=")
+        if name:
+            pairs.append((unquote_plus(name), unquote_plus(value)))
+    return pairs
+
+
+def _is_login_like(path: str) -> bool:
+    return bool(AUTH_RE.search(path.split("?", 1)[0]))
+
+
+def _is_static(path: str) -> bool:
+    """Public static files (scripts, styles, images, fonts, UI translations). Without a session they are normal."""
+    plain = path.split("?", 1)[0]
+    return bool(STATIC_FILE_RE.search(plain)) or (plain.startswith("/assets/") and plain.endswith(".json"))
+
+
+def _has_credentials(obj) -> bool:
+    """True if a JSON value holds a credential-like key or a JWT anywhere inside it."""
+    if isinstance(obj, dict):
+        return any(CREDENTIAL_NAME_RE.search(str(k)) or _has_credentials(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(_has_credentials(v) for v in obj)
+    return isinstance(obj, str) and bool(re.match(r"eyJ[A-Za-z0-9_-]{5,}\.", obj))
+
+
+def _param_probes(ep: Endpoint) -> list[Probe]:
+    """A quote and an always-true condition in each query parameter. Credential-like names are skipped."""
+    out, seen = [], set()
+    for name, value in _query_pairs(ep.path):
+        if name in seen or CREDENTIAL_NAME_RE.search(name):
+            continue
+        seen.add(name)
+        try:
+            out.append(Probe("params_quote", ep, httpmsg.apply_position(ep.raw, f"query:{name}", value + "'"),
+                             note=f"quote in parameter {name}"))
+            out.append(Probe("params_bool", ep, httpmsg.apply_position(ep.raw, f"query:{name}", value + "' OR 1=1--"),
+                             note=f"always-true condition in parameter {name}"))
+        except MsgError:  # the parameter name is encoded in a way the position helper does not match: skip it
+            continue
+    return out
+
+
+def _post_probes(ep: Endpoint) -> list[Probe]:
+    """A quote and a marker in each top-level string field of a JSON body.
+
+    Login-like paths get nothing. A body with a credential-like key or a token anywhere in it is never sent again:
+    the recorded secrets must not go back to the target.
+    """
+    if _is_login_like(ep.path):
+        return []
+    try:
+        data = json.loads(ep.raw.replace("\r\n", "\n").partition("\n\n")[2])
+    except ValueError:
+        return []  # only JSON bodies are probed
+    if not isinstance(data, dict) or _has_credentials(data):
+        return []
+    out = []
+    for key, value in data.items():
+        if not isinstance(value, str) or "." in key:  # a dot would be read as a path into the object
+            continue
+        try:
+            out.append(Probe("post_quote", ep, httpmsg.apply_position(ep.raw, f"json:{key}", value + "'"),
+                             note=f"quote in field {key}"))
+            marker = "zq" + secrets.token_hex(4)
+            out.append(Probe("post_reflect", ep, httpmsg.apply_position(ep.raw, f"json:{key}", marker),
+                             marker=marker, note=f"marker in field {key}"))
+        except MsgError:
+            continue
+    return out
+
+
 def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
-    """All probes of one endpoint: the baseline and its checks."""
+    """All probes of one endpoint. A POST endpoint gets only the POST checks: its recorded request is not re-sent."""
+    if ep.method == "POST":
+        return _post_probes(ep) if "post" in checks else []
     out = [Probe("baseline", ep, ep.raw)]
-    if "auth" in checks and ep.has_auth:
+    if "auth" in checks and ep.has_auth and not _is_static(ep.path):
         out.append(Probe("auth", ep, _strip_auth(ep.raw), note="without Cookie/Authorization"))
     seg = _numeric_segment(ep.path)
     if "ids" in checks and seg is not None:
@@ -146,6 +246,8 @@ def _bundle(ep: Endpoint, checks: tuple) -> list[Probe]:
     if "reflect" in checks:
         marker = "zq" + secrets.token_hex(4)
         out.append(Probe("reflect", ep, _with_query(ep.raw, marker), marker=marker))
+    if "params" in checks:
+        out.extend(_param_probes(ep))
     return out
 
 
@@ -173,7 +275,7 @@ def _status(resp: str) -> str | None:
 
 
 def _body(resp: str) -> str:
-    return resp.replace("\r\n", "\n").partition("\n\n")[2]
+    return httpmsg.unwrap_response(resp).replace("\r\n", "\n").partition("\n\n")[2]
 
 
 def _finding(kind: str, probe: Probe, status: str | None, length: int, base: dict | None) -> dict:
@@ -195,7 +297,7 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
     """Decides whether there is a candidate. base is the baseline result for the same endpoint."""
     ep = probe.endpoint
     if probe.check == "baseline":
-        if not ep.has_auth and status == "200" and length > 0:
+        if not ep.has_auth and status == "200" and length > 0 and not _is_static(ep.path):
             return _finding("anonymous_200_candidate", probe, status, length, None)
         return None
     if probe.check == "auth":
@@ -210,7 +312,23 @@ def judge(probe: Probe, status: str | None, length: int, text: str, base: dict |
         if status and int(status) >= 500:
             return _finding("server_error_on_malformed_input", probe, status, length, base)
         return None
+    if probe.check in ("params_quote", "post_quote"):
+        if SQL_ERROR_RE.search(text):
+            return _finding("sql_error_candidate", probe, status, length, base)
+        if status and int(status) >= 500:
+            return _finding("server_error_on_malformed_input", probe, status, length, base)
+        return None
+    if probe.check == "params_bool":
+        # an error on the always-true payload means the input reached SQL and broke the query
+        if SQL_ERROR_RE.search(text) or (status and int(status) >= 500):
+            return _finding("sql_error_candidate", probe, status, length, base)
+        if status == "200" and base and base["status"] == "200" \
+                and length > base["length"] * BOOL_GROWTH + BOOL_MARGIN:
+            return _finding("sql_boolean_candidate", probe, status, length, base)
+        return None
     if probe.check == "reflect" and probe.marker and probe.marker in text:
+        return _finding("reflected_input_candidate", probe, status, length, base)
+    if probe.check == "post_reflect" and probe.marker and probe.marker in text:
         return _finding("reflected_input_candidate", probe, status, length, base)
     return None
 

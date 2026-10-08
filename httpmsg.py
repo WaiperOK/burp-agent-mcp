@@ -53,8 +53,24 @@ def normalize_path(path: str) -> str:
     return "/".join(segs) or "/"
 
 
+def unwrap_response(raw: str) -> str:
+    """The HTTP response inside a Burp send reply.
+
+    Burp wraps a sent request and its reply as HttpRequestResponse{httpRequest=..., httpResponse=...}. Only the
+    response part is wanted: the request part can be long, and the status line would fall outside the first bytes.
+    """
+    if not raw.startswith("HttpRequestResponse{"):
+        return raw
+    marker = ", httpResponse="
+    at = raw.find(marker)
+    if at == -1:
+        return raw
+    text = raw[at + len(marker):]
+    return text[:-1] if text.endswith("}") else text  # the wrapper ends with one closing brace
+
+
 def status_of(response: str) -> str | None:
-    m = _STATUS_RE.search(response[:200])
+    m = _STATUS_RE.search(unwrap_response(response)[:200])
     return m.group(1) if m else None
 
 

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -693,6 +694,91 @@ class PluginToolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             server.BURP_JAR = original
         self.assertIn("BURP_JAR", out["error"])
+
+
+class ActiveScanTests(unittest.IsolatedAsyncioTestCase):
+    """The active checks end to end, against a fake target that behaves like a small vulnerable app:
+    a quote in the search parameter gives an SQL error, an always-true condition returns many rows, and a
+    JSON field is echoed back in the response."""
+
+    RECORDS = [
+        {"request": req(HOST, "GET", "/api/items?q=apple"),
+         "response": resp(200, "application/json", '{"items": ["apple"]}')},
+        {"request": req(HOST, "POST", "/api/feedback", "Content-Type: application/json\r\n",
+                        '{"comment": "hi", "rating": 3}'),
+         "response": resp(201, "application/json", '{"ok": true}')},
+    ]
+
+    def setUp(self):
+        self._saved = (server._upstream, server.HISTORY)
+        server.HISTORY = HistoryIndex(max_records=500, page=server.HISTORY_PAGE, on_reset=server._ITEM_CACHE.clear)
+        server._ITEM_CACHE.clear()
+        server._TTL_CACHE.clear()
+        self.sent_methods = []
+        server._upstream = self.target
+
+    def tearDown(self):
+        server._upstream, server.HISTORY = self._saved
+        server._ITEM_CACHE.clear()
+
+    async def target(self, tool, arguments):
+        if tool == "get_proxy_http_history_regex":
+            rx = re.compile(arguments["regex"])
+            items = [it for it in self.RECORDS if rx.search(it["request"] + "\n" + it["response"])]
+        elif tool == "get_proxy_http_history":
+            items = self.RECORDS
+        elif tool == "send_http1_request":
+            raw = arguments["content"]
+            self.sent_methods.append(raw.split(" ", 1)[0])
+            return self.answer(raw)
+        else:
+            return await fake_upstream(tool, arguments)
+        off, cnt = arguments["offset"], arguments["count"]
+        page = items[off:off + cnt]
+        return json.dumps(page) if page else "Reached end of items"
+
+    def answer(self, raw: str) -> str:
+        method, path = httpmsg.split_request(raw)
+        body = raw.partition("\r\n\r\n")[2]
+        if path.startswith("/api/items"):
+            q = parse_qs(urlsplit(path).query).get("q", [""])[0]
+            if "OR 1=1" in q:
+                return resp(200, "application/json", json.dumps({"items": ["row"] * 200}))
+            if "'" in q:
+                return resp(500, "text/plain", 'SQLITE_ERROR: near "\'": syntax error')
+            return resp(200, "application/json", '{"items": ["apple"]}')
+        if path.startswith("/api/feedback") and method == "POST":
+            comment = str(json.loads(body).get("comment", ""))
+            if "'" in comment:
+                return resp(500, "text/plain", "SQLITE_ERROR: syntax error")
+            return resp(201, "application/json", json.dumps({"saved": comment}))
+        return resp(404, "text/plain", "not found")
+
+    async def run_scan(self, checks: str) -> dict:
+        out = await server.scan_start("active checks test on the fake target", source="history",
+                                      checks=checks, max_requests=150)
+        self.assertNotIn("error", out, out)
+        for _ in range(100):
+            status = await server.scan_status(out["job_id"])
+            if status["state"] != "running":
+                return status
+            await asyncio.sleep(0.05)
+        self.fail("scan did not finish")
+
+    async def test_active_checks_find_the_planted_behaviour(self):
+        status = await self.run_scan("params,post,reflect")
+        kinds = {f["candidate"] for f in status["findings"]}
+        self.assertIn("sql_error_candidate", kinds)  # quote in q and in comment
+        self.assertIn("sql_boolean_candidate", kinds)  # always-true condition in q returns many rows
+        self.assertIn("reflected_input_candidate", kinds)  # the comment comes back in the response
+        self.assertIn("POST", self.sent_methods)
+        boolean = [f for f in status["findings"] if f["candidate"] == "sql_boolean_candidate"]
+        self.assertEqual([f["reproduced"] for f in boolean], [True])  # the repeat gave the same result
+
+    async def test_post_is_not_sent_without_the_post_check(self):
+        await self.run_scan("params,reflect")
+        self.assertTrue(self.sent_methods)
+        self.assertEqual(set(self.sent_methods), {"GET"})
 
 
 if __name__ == "__main__":

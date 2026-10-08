@@ -181,5 +181,108 @@ class SchemeTests(unittest.TestCase):
         self.assertEqual(seen, [f"https://{HOST}/api/Products"])  # no http:// candidate is tried
 
 
+class ActiveChecksTests(unittest.TestCase):
+    """The params and post checks: which probes are built, and which responses count as candidates."""
+
+    def _get(self, path: str):
+        return scanner.endpoint_from_raw(f"GET {path} HTTP/1.1\r\nHost: {HOST}\r\n\r\n", "history")
+
+    def _post(self, path: str, body: str):
+        raw = f"POST {path} HTTP/1.1\r\nHost: {HOST}\r\nContent-Type: application/json\r\n\r\n{body}"
+        return scanner.endpoint_from_raw(raw, "history", scanner.SAFE_METHODS + ("POST",))
+
+    def test_post_is_refused_unless_the_methods_allow_it(self):
+        raw = f"POST /api/x HTTP/1.1\r\nHost: {HOST}\r\n\r\n{{}}"
+        with self.assertRaises(MsgError):
+            scanner.endpoint_from_raw(raw, "history")
+        self.assertEqual(scanner.endpoint_from_raw(raw, "history", scanner.SAFE_METHODS + ("POST",)).method, "POST")
+
+    def test_query_parameters_get_a_quote_and_an_always_true_probe(self):
+        probes = scanner.build_probes([self._get("/api/items?q=apple&page=2")], ("params",), 50)
+        probes = [p for p in probes if p.check != "baseline"]  # the baseline request is always sent first
+        self.assertEqual([p.check for p in probes], ["params_quote", "params_bool", "params_quote", "params_bool"])
+        first = probes[0].raw.split("\r\n")[0]
+        self.assertIn("q=apple%27", first)  # the quote is percent-encoded and the other parameter is kept
+        self.assertIn("page=2", first)
+        self.assertIn("OR%201%3D1--", probes[1].raw.split("\r\n")[0])
+
+    def test_credential_parameters_are_kept_unchanged(self):
+        probes = [p for p in scanner.build_probes([self._get("/api/items?token=abc&q=apple")], ("params",), 50)
+                  if p.check != "baseline"]
+        self.assertTrue(probes)
+        for p in probes:
+            self.assertIn("token=abc", p.raw.split("\r\n")[0])  # never varied, so the secret is not probed
+
+    def test_json_string_fields_get_a_quote_and_a_marker(self):
+        probes = scanner.build_probes([self._post("/api/feedback", '{"comment": "hi", "rating": 3}')], ("post",), 50)
+        self.assertEqual([p.check for p in probes], ["post_quote", "post_reflect"])  # the number is not probed
+        self.assertIn("hi'", probes[0].raw.split("\r\n\r\n", 1)[1])
+        self.assertIn(probes[1].marker, probes[1].raw)
+
+    def test_post_endpoints_are_ignored_unless_the_post_check_is_asked(self):
+        ep = self._post("/api/feedback", '{"comment": "hi"}')
+        self.assertEqual(scanner.build_probes([ep], ("params", "reflect"), 50), [])
+
+    def test_login_like_post_gets_no_probes(self):
+        self.assertEqual(scanner.build_probes([self._post("/rest/user/login", '{"comment": "hi"}')], ("post",), 50), [])
+
+    def test_body_with_a_password_or_a_token_is_never_sent_again(self):
+        with_password = self._post("/api/feedback", '{"comment": "hi", "user": {"password": "x"}}')
+        with_jwt = self._post("/api/feedback", '{"data": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"}')
+        self.assertEqual(scanner.build_probes([with_password, with_jwt], ("post",), 50), [])
+
+    def test_sql_error_text_is_a_candidate(self):
+        probe = next(p for p in scanner.build_probes([self._get("/api/items?q=apple")], ("params",), 50)
+                     if p.check == "params_quote")
+        out = scanner.judge(probe, "500", 40, 'SQLITE_ERROR: near "\'": syntax error', None)
+        self.assertEqual(out["candidate"], "sql_error_candidate")
+
+    def test_always_true_condition_with_a_much_longer_body_is_a_candidate(self):
+        probes = scanner.build_probes([self._get("/api/items?q=apple")], ("params",), 50)
+        bool_probe = next(p for p in probes if p.check == "params_bool")
+        base = {"status": "200", "length": 500}
+        self.assertEqual(scanner.judge(bool_probe, "200", 4000, "x" * 4000, base)["candidate"], "sql_boolean_candidate")
+        self.assertIsNone(scanner.judge(bool_probe, "200", 520, "x" * 520, base))  # same size: no candidate
+
+    def test_error_on_the_always_true_payload_is_a_sql_error_candidate(self):
+        probes = scanner.build_probes([self._get("/api/items?q=apple")], ("params",), 50)
+        bool_probe = next(p for p in probes if p.check == "params_bool")
+        out = scanner.judge(bool_probe, "500", 40, 'Error: SQLITE_ERROR: incomplete input', {"status": "200", "length": 500})
+        self.assertEqual(out["candidate"], "sql_error_candidate")
+
+    def test_static_files_are_not_checked_for_authorization(self):
+        raw = f"GET /assets/public/images/apple.png HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n"
+        ep = scanner.endpoint_from_raw(raw, "history")
+        self.assertNotIn("auth", [p.check for p in scanner.build_probes([ep], ("auth",), 50)])
+        self.assertIsNone(scanner.judge(scanner.Probe("baseline", ep, raw), "200", 300, "x" * 300, None))
+
+    def test_api_endpoints_are_still_checked_for_authorization(self):
+        raw = f"GET /api/Users/1 HTTP/1.1\r\nHost: {HOST}\r\nCookie: s=1\r\n\r\n"
+        ep = scanner.endpoint_from_raw(raw, "history")
+        self.assertIn("auth", [p.check for p in scanner.build_probes([ep], ("auth",), 50)])
+
+    def test_marker_returned_in_a_post_field_is_reflected_input(self):
+        probes = scanner.build_probes([self._post("/api/feedback", '{"comment": "hi"}')], ("post",), 50)
+        reflect = next(p for p in probes if p.check == "post_reflect")
+        out = scanner.judge(reflect, "201", 30, f"saved: {reflect.marker}", None)
+        self.assertEqual(out["candidate"], "reflected_input_candidate")
+
+
+class BurpReplyScanTests(unittest.TestCase):
+    """The scanner reads status and body from a Burp reply, so its candidates depend on the response part."""
+
+    WRAPPED = "HttpRequestResponse{httpRequest=GET /rest/x?q=apple HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nCookie: a=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\n\r\n, httpResponse=HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\nSQLITE_ERROR: syntax error}"
+
+    def test_status_and_body_come_from_the_response_part(self):
+        self.assertEqual(scanner._status(self.WRAPPED), "500")
+        self.assertIn("SQLITE_ERROR", scanner._body(self.WRAPPED))
+
+    def test_sql_error_in_a_wrapped_reply_is_a_candidate(self):
+        ep = scanner.endpoint_from_raw(f"GET /api/items?q=apple HTTP/1.1\r\nHost: {HOST}\r\n\r\n", "history")
+        probe = next(p for p in scanner.build_probes([ep], ("params",), 50) if p.check == "params_quote")
+        out = scanner.judge(probe, scanner._status(self.WRAPPED), 40, scanner._body(self.WRAPPED), None)
+        self.assertEqual(out["candidate"], "sql_error_candidate")
+
+
 if __name__ == "__main__":
     unittest.main()

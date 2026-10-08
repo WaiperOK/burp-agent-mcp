@@ -162,7 +162,7 @@ sequenceDiagram
     G-->>M: progress, candidates, stop reason
 ```
 
-The scanner runs four checks per endpoint. Each one produces a *candidate* for manual review, never a confirmed finding:
+The scanner runs the checks below. Each one produces a *candidate* for manual review, never a confirmed finding:
 
 | Check | Idea | Candidate |
 |---|---|---|
@@ -170,6 +170,12 @@ The scanner runs four checks per endpoint. Each one produces a *candidate* for m
 | `ids` | Try neighbouring numeric ids | objects can be enumerated (IDOR lead) |
 | `malformed` | Put a quote where a numeric id is | unhandled server error |
 | `reflect` | Put a unique marker in a query parameter | reflected input |
+| `params` | A quote in each query parameter, then an always-true condition (`' OR 1=1--`) | SQL error text (`sql_error_candidate`), or a response much longer than the baseline (`sql_boolean_candidate`) |
+| `post` | A quote and a marker in each string field of a JSON POST body | SQL error text, 5xx, or the marker echoed back (`reflected_input_candidate`) |
+
+The `post` check sends POST requests, so it needs `POST` in the policy's `allowed_methods` and the check named in the scan. Login, registration, password and token endpoints are never probed, and a body with a password, token or other credential-like field is never sent again, because the recorded secret would go back to the target. Only JSON bodies are probed. Credential-like parameter names (`token`, `password`, `key` and similar) are not varied.
+
+To scan as a signed-in user, run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. The gateway never types passwords. Requests recorded from that session carry the login, and the authorization probes use them.
 
 Each candidate is repeated once when budget allows and marked `reproduced: true` or `false`. A repeat never takes budget from probes that have not been sent yet.
 
@@ -207,7 +213,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-216 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+236 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

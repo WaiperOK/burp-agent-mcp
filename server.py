@@ -1135,16 +1135,25 @@ def _parse_checks(checks: str) -> tuple:
     return names
 
 
-async def _collect_endpoints(source: str, openapi_name: str | None) -> list[scanner.Endpoint]:
+def _scan_methods(names: tuple) -> tuple:
+    """HTTP methods the scan may collect. POST only when the post check is asked for and the policy allows POST."""
+    methods = list(scanner.SAFE_METHODS)
+    if "post" in names and "POST" in POLICY.allowed_methods:
+        methods.append("POST")
+    return tuple(methods)
+
+
+async def _collect_endpoints(source: str, openapi_name: str | None,
+                             methods: tuple = scanner.SAFE_METHODS) -> list[scanner.Endpoint]:
     """Endpoints for the scanner: from history (only in scope) or from OpenAPI via scope_urls (no records sent)."""
     seen: dict[tuple, scanner.Endpoint] = {}
     if source == "history":
         async for item in _scoped_items():
             raw = item.get("request", "") or ""
             try:
-                ep = scanner.endpoint_in_scope(raw, "history", POLICY.url_in_scope)
+                ep = scanner.endpoint_in_scope(raw, "history", POLICY.url_in_scope, methods)
             except (MsgError, ValueError):
-                continue  # not GET/HEAD/OPTIONS, or a damaged record
+                continue  # a method the scan does not use, or a damaged record
             if ep is None:  # outside the scope, under either scheme
                 continue
             seen.setdefault(ep.key, ep)
@@ -1205,7 +1214,8 @@ async def scan_plan(source: str = "history", checks: str = "auth,ids,malformed,r
     """Scan plan WITHOUT sending requests (read-only). Shows how many requests would be sent and where.
 
     source: history (endpoints from Proxy history in scope) or openapi (GET operations from the spec via scope_urls).
-    checks: auth, ids, malformed, reflect, comma-separated. max_requests is capped by the policy.
+    checks: auth, ids, malformed, reflect, params, post (comma-separated). post probes POST requests and needs
+    POST in the policy's allowed_methods. max_requests is capped by the policy.
     """
     args = {"source": source, "checks": checks[:200], "max_requests": max_requests}
     try:
@@ -1213,7 +1223,7 @@ async def scan_plan(source: str = "history", checks: str = "auth,ids,malformed,r
         limit = max(1, min(int(max_requests), POLICY.scan_max_requests))
         remaining = _budget_remaining()
         limit = min(limit, remaining) if remaining > 0 else 0
-        endpoints = await _collect_endpoints(source, openapi_name)
+        endpoints = await _collect_endpoints(source, openapi_name, _scan_methods(names))
         probes = scanner.build_probes(endpoints, names, limit) if limit else []
     except (MsgError, UpstreamError, ValueError) as ex:
         AUDIT.record("scan_plan", "deny", args, error=str(ex)[:300])
@@ -1281,7 +1291,8 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
                      max_requests: int = 150, openapi_name: str | None = None) -> dict:
     """START a URL scan in the background (TRAFFIC TO THE TARGET: mode=active only, environment test/stage).
 
-    GET/HEAD/OPTIONS only, only URLs from scope_urls. No more than scan_max_requests requests.
+    GET/HEAD/OPTIONS, only URLs from scope_urls. POST only with the post check and when POST is in the policy's
+    allowed_methods. Login-like endpoints are never probed with POST. No more than scan_max_requests requests.
     Stops on 429/503, on a series of errors, or on scan_stop. Status: scan_status.
     reason is required. At most one job runs at a time.
     """
@@ -1298,7 +1309,7 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
         if remaining <= 0:
             raise PolicyError("active request budget is exhausted (max_active_requests_total)")
         limit = min(max(1, min(int(max_requests), POLICY.scan_max_requests)), remaining)
-        endpoints = await _collect_endpoints(source, openapi_name)
+        endpoints = await _collect_endpoints(source, openapi_name, _scan_methods(names))
         probes = scanner.build_probes(endpoints, names, limit)
         if not probes:
             raise PolicyError("nothing to scan: no GET/HEAD/OPTIONS endpoints in scope")

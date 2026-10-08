@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from httpmsg import MsgError, apply_position, build_request, json_records, parse_history, parse_position  # noqa: E402
+import httpmsg  # noqa: E402
 
 HOST = "ehealth.test.local"
 GET_QUERY = (f"GET /api/visits?patient=101&lang=uk&sort= HTTP/1.1\r\nHost: {HOST}\r\n"
@@ -130,6 +131,25 @@ class JsonRecordsTests(unittest.TestCase):
         self.assertEqual(json_records("Reached end of items"), ([], False))
         recs, _ = json_records('garbage\n{"name":"ok"}\nmore garbage')
         self.assertEqual(recs, [{"name": "ok"}])
+
+
+class BurpReplyTests(unittest.TestCase):
+    """Burp wraps a sent request and its reply. The status must be found even when the request part is long."""
+
+    WRAPPED = "HttpRequestResponse{httpRequest=GET /rest/x?q=apple HTTP/1.1\r\nHost: 127.0.0.1:3000\r\nCookie: a=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\n\r\n, httpResponse=HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\nSQLITE_ERROR: syntax error}"
+
+    def test_unwrap_returns_the_response_part_only(self):
+        out = httpmsg.unwrap_response(self.WRAPPED)
+        self.assertTrue(out.startswith("HTTP/1.1 500"))
+        self.assertTrue(out.endswith("syntax error"))  # the closing brace of the wrapper is removed
+
+    def test_status_is_found_after_a_long_request(self):
+        self.assertEqual(httpmsg.status_of(self.WRAPPED), "500")
+
+    def test_plain_responses_are_unchanged(self):
+        plain = "HTTP/1.1 200 OK\r\n\r\n{}"
+        self.assertEqual(httpmsg.unwrap_response(plain), plain)
+        self.assertEqual(httpmsg.status_of(plain), "200")
 
 
 if __name__ == "__main__":
