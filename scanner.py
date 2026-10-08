@@ -215,34 +215,75 @@ def _param_probes(ep: Endpoint, known: dict) -> list[Probe]:
     return out
 
 
-def _post_probes(ep: Endpoint) -> list[Probe]:
-    """A quote and a marker in each top-level string field of a JSON body.
+MAX_POST_FIELDS = 20  # per endpoint: a large body would otherwise take the whole budget
 
-    Login-like paths get nothing. A body with a credential-like key or a token anywhere in it is never sent again:
-    the recorded secrets must not go back to the target.
+
+def _request_content_type(raw: str) -> str:
+    head = raw.replace("\r\n", "\n").partition("\n\n")[0]
+    return httpmsg.header_of(head, "content-type").lower()
+
+
+def _json_leaves(obj, path: str = "", depth: int = 0) -> list[tuple[str, str]]:
+    """(dot path, value) of every string inside a JSON value. A list index counts as a name."""
+    if depth > 8:
+        return []
+    if isinstance(obj, str):
+        return [(path, obj)] if path else []
+    if isinstance(obj, dict):
+        items = [(str(k), v) for k, v in obj.items() if "." not in str(k)]  # a dot would be read as a path
+    elif isinstance(obj, list):
+        items = [(str(i), v) for i, v in enumerate(obj)]
+    else:
+        return []
+    out = []
+    for name, value in items:
+        out.extend(_json_leaves(value, f"{path}.{name}" if path else name, depth + 1))
+    return out
+
+
+def _form_fields(body: str) -> list[tuple[str, str]]:
+    """(name, value) pairs of an application/x-www-form-urlencoded body, decoded."""
+    fields = []
+    for piece in body.split("&") if body else []:
+        name, _, value = piece.partition("=")
+        if name:
+            fields.append((unquote_plus(name), unquote_plus(value)))
+    return fields
+
+
+def _post_probes(ep: Endpoint) -> list[Probe]:
+    """A quote and a marker in each text field of a POST body: JSON (nested fields too) or a form.
+
+    Login-like paths get nothing. A body with a credential-like name or a token anywhere in it is never sent again:
+    the recorded secrets must not go back to the target. At most MAX_POST_FIELDS fields are probed per endpoint.
     """
     if _is_login_like(ep.path):
         return []
-    try:
-        data = json.loads(ep.raw.replace("\r\n", "\n").partition("\n\n")[2])
-    except ValueError:
-        return []  # only JSON bodies are probed
-    if not isinstance(data, dict) or _has_credentials(data):
-        return []
-    out = []
-    for key, value in data.items():
-        if not isinstance(value, str) or "." in key:  # a dot would be read as a path into the object
-            continue
+    body = ep.raw.replace("\r\n", "\n").partition("\n\n")[2]
+    if "x-www-form-urlencoded" in _request_content_type(ep.raw):
+        fields = _form_fields(body)
+        if any(CREDENTIAL_NAME_RE.search(name) or _has_credentials(value) for name, value in fields):
+            return []
+        targets = [(f"form:{name}", name, value) for name, value in fields]
+    else:
         try:
-            out.append(Probe("post_quote", ep, httpmsg.apply_position(ep.raw, f"json:{key}", value + "'"),
-                             note=f"quote in field {key}"))
+            data = json.loads(body)
+        except ValueError:
+            return []  # neither a form nor JSON: nothing to probe
+        if _has_credentials(data):
+            return []
+        targets = [(f"json:{path}", path, value) for path, value in _json_leaves(data)]
+    out = []
+    for spec, name, value in targets[:MAX_POST_FIELDS]:
+        try:
+            out.append(Probe("post_quote", ep, httpmsg.apply_position(ep.raw, spec, value + "'"),
+                             note=f"quote in field {name}"))
             marker = "zq" + secrets.token_hex(4)
-            out.append(Probe("post_reflect", ep, httpmsg.apply_position(ep.raw, f"json:{key}", marker),
-                             marker=marker, note=f"marker in field {key}"))
+            out.append(Probe("post_reflect", ep, httpmsg.apply_position(ep.raw, spec, marker),
+                             marker=marker, note=f"marker in field {name}"))
         except MsgError:
             continue
     return out
-
 
 def _bundle(ep: Endpoint, checks: tuple, known: dict | None = None) -> list[Probe]:
     """All probes of one endpoint. A POST endpoint gets only the POST checks: its recorded request is not re-sent."""

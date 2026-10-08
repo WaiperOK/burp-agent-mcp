@@ -6,9 +6,9 @@ into a position (for Intruder). Anything that breaks on input raises MsgError.
 
 import json
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote_plus, urlsplit
 
-POSITION_KINDS = ("query", "header", "json", "path")
+POSITION_KINDS = ("query", "header", "json", "path", "form")
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _NUM_RE = re.compile(r"^\d+$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -233,7 +233,7 @@ def build_request(orig: str, method: str, path: str, set_headers: dict | None = 
 def parse_position(spec: str) -> tuple[str, str]:
     kind, sep, name = spec.partition(":")
     if kind not in POSITION_KINDS or not sep or not name:
-        raise MsgError("position must be query:<name> | header:<name> | json:<dot.path> | path:<index>")
+        raise MsgError("position must be query:<name> | header:<name> | json:<dot.path> | path:<index> | form:<name>")
     return kind, name
 
 
@@ -277,6 +277,21 @@ def apply_position(orig: str, spec: str, payload: str) -> str:
         if not present:
             raise MsgError(f"header not found: {name}")
         return build_request(orig, method, path, set_headers={name: payload})
+
+    if kind == "form":  # a field of an application/x-www-form-urlencoded body: the other fields stay byte for byte
+        body = orig.replace("\r\n", "\n").partition("\n\n")[2]
+        found = False
+        new_pieces = []
+        for piece in body.split("&") if body else []:
+            key, _, _ = piece.partition("=")
+            if unquote_plus(key) == name:
+                found = True
+                new_pieces.append(f"{key}={quote(payload, safe='')}")
+            else:
+                new_pieces.append(piece)
+        if not found:
+            raise MsgError(f"form field not found: {name}")
+        return build_request(orig, method, path, body="&".join(new_pieces))
 
     # json: body fields that already exist in the object (no new keys are created)
     body = orig.replace("\r\n", "\n").partition("\n\n")[2]

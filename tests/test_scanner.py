@@ -332,5 +332,38 @@ class GroupAndRepeatTests(unittest.TestCase):
         self.assertEqual(sorted(r["path"] for r in rows), ["https://h/api/x", "https://h/api/y"])
 
 
+class FormAndNestedBodyTests(unittest.TestCase):
+    """POST bodies: form fields, JSON fields at any depth, and the per-endpoint field cap."""
+
+    def _json_post(self, body: str):
+        raw = f"POST /api/feedback HTTP/1.1\r\nHost: {HOST}\r\nContent-Type: application/json\r\n\r\n{body}"
+        return scanner.endpoint_from_raw(raw, "history", scanner.SAFE_METHODS + ("POST",))
+
+    def _form_post(self, body: str):
+        raw = (f"POST /api/feedback HTTP/1.1\r\nHost: {HOST}\r\n"
+               f"Content-Type: application/x-www-form-urlencoded\r\n\r\n{body}")
+        return scanner.endpoint_from_raw(raw, "history", scanner.SAFE_METHODS + ("POST",))
+
+    def test_form_fields_get_a_quote_and_a_marker_each(self):
+        probes = scanner.build_probes([self._form_post("comment=hi&rating=3")], ("post",), 50)
+        self.assertEqual([p.check for p in probes], ["post_quote", "post_reflect", "post_quote", "post_reflect"])
+        self.assertIn("comment=hi%27&rating=3", probes[0].raw.split("\r\n\r\n", 1)[1])
+
+    def test_form_with_a_credential_field_is_never_sent_again(self):
+        self.assertEqual(scanner.build_probes([self._form_post("comment=hi&password=x")], ("post",), 50), [])
+
+    def test_nested_json_fields_are_probed_at_their_own_path(self):
+        body = '{"comment": "hi", "user": {"nickname": "bob", "tags": ["a", 5]}}'
+        probes = scanner.build_probes([self._json_post(body)], ("post",), 50)
+        self.assertEqual(len(probes), 6)  # comment, user.nickname, user.tags.0 (a number is not probed)
+        nick = next(p for p in probes if p.note == "quote in field user.nickname")
+        self.assertIn('"nickname": "bob\'"', nick.raw.split("\r\n\r\n", 1)[1])
+
+    def test_probes_per_endpoint_are_capped(self):
+        body = "{" + ", ".join(f'"f{i}": "v{i}"' for i in range(30)) + "}"
+        probes = scanner.build_probes([self._json_post(body)], ("post",), 500)
+        self.assertEqual(len(probes), 2 * scanner.MAX_POST_FIELDS)
+
+
 if __name__ == "__main__":
     unittest.main()

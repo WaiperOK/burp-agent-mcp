@@ -173,7 +173,7 @@ The scanner runs the checks below. Each one produces a *candidate* for manual re
 | `params` | A quote in each query parameter, then an always-true condition (`' OR 1=1--`) | SQL error text (`sql_error_candidate`), or a response much longer than the baseline (`sql_boolean_candidate`) |
 | `post` | A quote and a marker in each string field of a JSON POST body | SQL error text, 5xx, or the marker echoed back (`reflected_input_candidate`) |
 
-The `post` check sends POST requests, so it needs `POST` in the policy's `allowed_methods` and the check named in the scan. Login, registration, password and token endpoints are never probed, and a body with a password, token or other credential-like field is never sent again, because the recorded secret would go back to the target. Only JSON bodies are probed. Credential-like parameter names (`token`, `password`, `key` and similar) are not varied.
+The `post` check sends POST requests, so it needs `POST` in the policy's `allowed_methods` and the check named in the scan. Login, registration, password and token endpoints are never probed, and a body with a password, token or other credential-like field is never sent again, because the recorded secret would go back to the target. JSON bodies are probed at any depth, and form bodies (`application/x-www-form-urlencoded`) field by field. At most 20 fields per endpoint. Credential-like parameter names (`token`, `password`, `key` and similar) are not varied.
 
 To scan as a signed-in user, run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. The gateway never types passwords. Requests recorded from that session carry the login, and the authorization probes use them.
 
@@ -213,7 +213,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-243 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+249 tests across thirteen suites. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

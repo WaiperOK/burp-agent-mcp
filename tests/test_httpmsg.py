@@ -165,5 +165,19 @@ class ParseReplyTests(unittest.TestCase):
         self.assertEqual(out["body"], '{"e": 1}')
 
 
+class FormPositionTests(unittest.TestCase):
+    def test_form_field_is_replaced_and_the_rest_is_kept(self):
+        raw = ("POST /api/x HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+               "comment=hi&rating=3")
+        out = httpmsg.apply_position(raw, "form:comment", "hi'")
+        self.assertEqual(out.split("\r\n\r\n", 1)[1], "comment=hi%27&rating=3")
+        self.assertIn("Content-Length: 22", out)
+
+    def test_missing_form_field_is_refused(self):
+        raw = "POST /x HTTP/1.1\r\nHost: h\r\n\r\na=1"
+        with self.assertRaises(MsgError):
+            httpmsg.apply_position(raw, "form:nope", "x")
+
+
 if __name__ == "__main__":
     unittest.main()
