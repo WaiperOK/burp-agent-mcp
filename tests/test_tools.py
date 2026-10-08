@@ -548,9 +548,12 @@ class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
         self._saved_upstream = server._upstream
         server.HISTORY = HistoryIndex(max_records=500, page=server.HISTORY_PAGE, on_reset=server._ITEM_CACHE.clear)
         server._ITEM_CACHE.clear()
+        server._TTL_CACHE.clear()  # aggregates cached by earlier tests must not answer these ones
         self.history_offsets = []  # offsets of every get_proxy_http_history call
+        self.tools_called = []  # every upstream tool name, in order
 
         async def counting(tool, arguments):
+            self.tools_called.append(tool)
             if tool == "get_proxy_http_history":
                 self.history_offsets.append(arguments["offset"])
             return await fake_upstream(tool, arguments)
@@ -561,6 +564,7 @@ class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
         server._upstream = self._saved_upstream
         server.HISTORY = self._saved_index
         server._ITEM_CACHE.clear()
+        server._TTL_CACHE.clear()
 
     async def test_search_finds_in_scope_records_and_redacts_them(self):
         out = await server.search_proxy_history(host=HOST, path_contains="/api/patients")
@@ -586,6 +590,32 @@ class HistorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([i["history_id"] for i in out["items"]], [4])
         # the tail record as a check, then an empty page; the matched record is already cached
         self.assertEqual(self.history_offsets, [4, 5])
+
+    async def test_endpoint_summary_and_coverage_come_from_the_index(self):
+        out = await server.list_endpoints(fresh=True)
+        self.assertEqual(out["total_endpoints"], 3)
+        self.assertTrue(out["complete"])
+        cov = await server.openapi_coverage("spec.json", fresh=True)
+        self.assertNotIn("error", cov)
+        self.assertEqual(cov["covered"], 2)  # GET /api/patients/{id} and POST /api/visits are in the history
+        self.assertNotIn("get_proxy_http_history_regex", self.tools_called)  # no regex rescans any more
+
+    async def test_incomplete_index_gives_partial_result_that_is_not_cached(self):
+        original = server.HISTORY.refresh
+
+        async def stop_at_once(fetch, time_budget_s=20.0, max_age_s=0.0):  # simulates a build cut by the budget
+            return await original(fetch, time_budget_s=0, max_age_s=max_age_s)
+
+        server.HISTORY.refresh = stop_at_once
+        try:
+            partial = await server.list_endpoints(fresh=True)
+        finally:
+            del server.HISTORY.refresh
+        self.assertFalse(partial["complete"])
+        full = await server.list_endpoints()  # the next call continues the build and is complete
+        self.assertTrue(full["complete"])
+        self.assertFalse(full["cached"])  # the partial result was not cached, so this is a real recomputation
+        self.assertEqual(full["total_endpoints"], 3)
 
     async def test_out_of_scope_host_is_refused(self):
         out = await server.search_proxy_history(host="evil.example")

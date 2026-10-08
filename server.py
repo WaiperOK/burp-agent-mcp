@@ -156,6 +156,13 @@ async def _history_page(offset: int, count: int) -> list[dict]:
     return httpmsg.parse_history(await _upstream("get_proxy_http_history", {"count": count, "offset": offset}))
 
 
+def _in_scope_entry(e: Entry, host_f: str | None = None) -> bool:
+    """True for an indexed record of an authorized host (or of one exact host) with a parsed request line."""
+    if not e.host or not e.method or not POLICY.host_in_scope(e.host):
+        return False
+    return not host_f or e.host == host_f
+
+
 CACHE_TTL = 15.0  # seconds: aggregates over history change only when someone browses the target
 _TTL_CACHE: dict[str, tuple[float, object]] = {}
 
@@ -307,9 +314,7 @@ async def search_proxy_history(host: str | None = None, path_contains: str | Non
         return {"error": str(ex)[:300]}
 
     def wanted(e: Entry) -> bool:
-        if not e.host or not POLICY.host_in_scope(e.host) or (host_f and e.host != host_f):
-            return False
-        return not path_contains or path_contains in e.path
+        return _in_scope_entry(e, host_f) and (not path_contains or path_contains in e.path)
 
     hits, scanned = HISTORY.find(wanted, limit)
     matches = []
@@ -342,7 +347,8 @@ async def list_endpoints(host: str | None = None, limit: int = 50, fresh: bool =
 
     Groups requests by method and path template (numeric, UUID and hex segments become {id}).
     For each endpoint: the request count and the set of statuses. host: exact host (optional).
-    The result is cached for 15 seconds; fresh=true recomputes it now.
+    Reads the history index (see search_proxy_history). The result is cached for 15 seconds;
+    fresh=true reads new Burp records and recomputes it now. complete=false: the index is still being built.
     """
     args = {"host": host, "limit": limit}
     limit = max(1, min(int(limit), 200))
@@ -354,32 +360,32 @@ async def list_endpoints(host: str | None = None, limit: int = 50, fresh: bool =
     if not fresh and (hit := _cache_get(cache_key)) is not None:
         return {**hit, "cached": True}
 
-    groups: dict[tuple, dict] = {}
-    scanned = 0
     try:
-        async for item in _scoped_items():
-            scanned += 1
-            req = item.get("request", "") or ""
-            h = httpmsg.host_from_request(req)
-            if not h or not POLICY.host_in_scope(h) or (host_f and h != host_f):
-                continue
-            method, path = httpmsg.split_request(req)
-            template = httpmsg.normalize_path(path)
-            g = groups.setdefault((h, method, template),
-                                  {"host": h, "method": method, "path": template, "count": 0, "statuses": set()})
-            g["count"] += 1
-            st = httpmsg.status_of(item.get("response", "") or "")
-            if st:
-                g["statuses"].add(st)
+        await HISTORY.refresh(_history_page, max_age_s=0.0 if fresh else INDEX_MAX_AGE_S)
     except (MsgError, UpstreamError) as ex:
         AUDIT.record("list_endpoints", "error", args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
 
+    groups: dict[tuple, dict] = {}
+    scanned = 0
+    for e in HISTORY.entries:
+        scanned += 1
+        if not _in_scope_entry(e, host_f):
+            continue
+        template = httpmsg.normalize_path(e.path)
+        g = groups.setdefault((e.host, e.method, template),
+                              {"host": e.host, "method": e.method, "path": template, "count": 0, "statuses": set()})
+        g["count"] += 1
+        if e.status:
+            g["statuses"].add(e.status)
+
     rows = sorted(groups.values(), key=lambda g: -g["count"])[:limit]
     endpoints = [{**g, "statuses": sorted(g["statuses"])} for g in rows]
     AUDIT.record("list_endpoints", "allow", args, summary={"scanned": scanned, "endpoints": len(groups)})
-    result = _envelope({"endpoints": endpoints, "total_endpoints": len(groups), "scanned": scanned, "cached": False})
-    _cache_put(cache_key, result)
+    result = _envelope({"endpoints": endpoints, "total_endpoints": len(groups), "scanned": scanned,
+                        "complete": HISTORY.complete, "cached": False})
+    if HISTORY.complete:  # a partial index gives partial counts: do not cache them
+        _cache_put(cache_key, result)
     return result
 
 
@@ -512,19 +518,18 @@ async def openapi_coverage(filename: str, show_uncovered: int = 30, fresh: bool 
             if method in item:
                 ops.add((method.upper(), template))
 
-    observed, scanned = set(), 0
     try:
-        async for item in _scoped_items():
-            req = item.get("request", "") or ""
-            h = httpmsg.host_from_request(req)
-            if not h or not POLICY.host_in_scope(h):
-                continue
-            method, path = httpmsg.split_request(req)
-            observed.add((method, httpmsg.normalize_path(path)))
-            scanned += 1
+        await HISTORY.refresh(_history_page, max_age_s=0.0 if fresh else INDEX_MAX_AGE_S)
     except (MsgError, UpstreamError) as ex:
         AUDIT.record("openapi_coverage", "error", args, error=str(ex)[:300])
         return {"error": str(ex)[:300]}
+
+    observed, scanned = set(), 0
+    for e in HISTORY.entries:
+        if not _in_scope_entry(e):
+            continue
+        observed.add((e.method, httpmsg.normalize_path(e.path)))
+        scanned += 1
 
     uncovered = sorted(ops - observed)
     show_uncovered = max(0, min(int(show_uncovered), 200))
@@ -537,9 +542,11 @@ async def openapi_coverage(filename: str, show_uncovered: int = 30, fresh: bool 
         "covered": len(ops & observed),
         "uncovered_sample": [{"method": m, "path": p} for m, p in uncovered[:show_uncovered]],
         "scanned": scanned,
+        "complete": HISTORY.complete,
         "cached": False,
     })
-    _cache_put(cache_key, result)
+    if HISTORY.complete:  # a partial index gives partial coverage: do not cache it
+        _cache_put(cache_key, result)
     return result
 
 

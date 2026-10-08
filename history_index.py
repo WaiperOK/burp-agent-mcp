@@ -84,7 +84,7 @@ class HistoryIndex:
                 else:
                     self.reset()  # cleared, replaced or shorter: index again from the start
             while offset < self.max_records:
-                if time.monotonic() - started > time_budget_s:
+                if time.monotonic() - started >= time_budget_s:  # >= so that a zero budget always stops
                     return  # partial: the next refresh continues from the last indexed record
                 page = await fetch(offset, self.page)
                 if not page:
