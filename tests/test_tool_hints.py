@@ -66,6 +66,16 @@ TARGET_CALLS = {
 RECORD = {"request": "GET /api/patients/101 HTTP/1.1\r\nHost: ehealth.test.local\r\n\r\n",
           "response": "HTTP/1.1 200 OK\r\n\r\n{}"}
 
+# Tools that change something on this machine (a Repeater tab, a form field, a job state, a build) and send nothing.
+# plugin_write is not called here: it writes into the plugins folder of the machine it runs on.
+LOCAL_CALLS = {
+    "repeater_tab": {"history_id": 0, "reason": "x"},
+    "browser_fill": {"selector": "#q", "value": "x", "reason": "x"},
+    "scan_stop": {"job_id": "none"},
+    "plugin_compile": {"name": "nope", "reason": "x"},
+    "browser_screenshot": {},
+}
+
 
 class StubBrowser:
     """Every browser method is recorded and fails: nothing starts, nothing is sent."""
@@ -107,6 +117,13 @@ class HintTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("send_http1_request", self.upstream_calls)
                 self.assertFalse(set(self.browser.calls) & BROWSER_ACTIONS, self.browser.calls)
 
+    async def test_local_tools_send_no_traffic(self):
+        for name, args in LOCAL_CALLS.items():
+            with self.subTest(tool=name):
+                self.upstream_calls.clear()
+                await getattr(server, name)(**args)
+                self.assertNotIn("send_http1_request", self.upstream_calls)
+
     async def test_traffic_tools_are_refused_in_read_only_mode(self):
         server.POLICY = dataclasses.replace(self._saved[2], mode="read_only")
         for name, args in TARGET_CALLS.items():
@@ -123,6 +140,8 @@ class HintTests(unittest.IsolatedAsyncioTestCase):
         tools = {t.name: t.annotations for t in await server.mcp.list_tools()}
         self.assertEqual(set(READ_ONLY_CALLS), {n for n, a in tools.items() if a.readOnlyHint})
         self.assertEqual(set(TARGET_CALLS), {n for n, a in tools.items() if a.openWorldHint})
+        local = {n for n, a in tools.items() if not a.readOnlyHint and not a.openWorldHint}
+        self.assertEqual(set(LOCAL_CALLS) | {"plugin_write"}, local)
 
 
 if __name__ == "__main__":
