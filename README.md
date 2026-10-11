@@ -181,7 +181,7 @@ The `post` check sends POST requests, so it needs `POST` in the policy's `allowe
 
 To scan as a signed-in user there are two ways. Either run `python browser_guard.py login <url>` once and sign in by hand in the window that opens. Or set `BURP_AGENT_LOGIN_EMAIL` and `BURP_AGENT_LOGIN_PASSWORD` in the gateway's environment and call `login_local` with the login page. `login_local` only works on local test hosts (`127.0.0.1`, `localhost`, `*.localhost`, `*.test`) inside the scope, in active mode, with POST allowed. The browser types the password; it is never returned, logged or shown to the model, and each sign-in is confirmed by the operator. Requests recorded from a signed-in session carry the login, and the authorization probes use them. Set `BURP_AGENT_LOGIN_URL` as well and a scan that finds its session expired signs in again by itself, at most twice per run, and sends the fresh bearer token with the remaining probes. Each sign-in is audited; a sign-in that fails ends the scan with the reason.
 
-`scan_plan` and `scan_start` read the newest `max_history_records` in-scope records, newest first, and scan at most 300 endpoints. When that limit cut the list, the plan says `endpoints_capped: true`, so a long session is never scanned partly without a warning.
+`scan_plan` and `scan_start` read the newest `max_history_records` in-scope records, newest first, and scan at most 300 endpoints. The plan also counts endpoints per host (`endpoints_per_host`). When the limit cut the list, it says `endpoints_capped: true`, so a long session is never scanned partly without a warning.
 
 `browser_crawl` opens the pages reachable from a start page by links on the same host, breadth first, with page and depth limits. It skips links that sign out or change data (logout, delete, reset, checkout, payment) and types nothing. The traffic lands in Burp history, so `scan_plan` can use the pages it found. Each crawl is confirmed by the operator.
 
@@ -223,7 +223,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-312 tests across sixteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. If none can start, they are skipped with the reason. Set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+313 tests across sixteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. If none can start, they are skipped with the reason. Set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 

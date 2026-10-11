@@ -55,6 +55,7 @@ Path(TMP, "policy.json").write_text(json.dumps({
 os.environ["BURP_AGENT_POLICY"] = f"{TMP}/policy.json"
 
 import httpmsg  # noqa: E402
+import scanner  # noqa: E402
 import server  # noqa: E402
 from history_index import HistoryIndex  # noqa: E402
 from policy import Gate, PolicyError  # noqa: E402
@@ -989,6 +990,15 @@ class UniversalReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ok", got["content"])
         self.assertNotIn("hunter2", json.dumps(got))
         self.assertIn("not found", missing["error"])
+
+
+class PlanPerHostTests(unittest.TestCase):
+    def test_plan_counts_endpoints_for_each_host(self):
+        raws = [f"GET /api/a{i} HTTP/1.1\r\nHost: ehealth.test.local\r\n\r\n" for i in range(2)]
+        raws.append("GET /api/b HTTP/1.1\r\nHost: other.test.local\r\n\r\n")
+        eps = [scanner.endpoint_from_raw(r, "history") for r in raws]
+        plan = server._plan_summary(eps, [])
+        self.assertEqual(plan["endpoints_per_host"], {"ehealth.test.local": 2, "other.test.local": 1})
 
 
 class ScopedHistoryWindowTests(unittest.IsolatedAsyncioTestCase):

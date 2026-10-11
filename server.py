@@ -1303,7 +1303,11 @@ def _plan_summary(endpoints, probes) -> dict:
     covered = len({p.endpoint.key for p in probes})
     # The rate limit is the floor for the run time: N probes need at least N / rate minutes.
     minutes = round(len(probes) / max(1, POLICY.max_requests_per_minute), 1)
+    per_host: dict[str, int] = {}
+    for e in endpoints:
+        per_host[e.host] = per_host.get(e.host, 0) + 1
     return {"endpoints_found": len(endpoints), "endpoints_in_run": covered, "probes": len(probes),
+            "endpoints_per_host": dict(sorted(per_host.items())),
             # at the cap, the collector stopped: endpoints beyond it are not scanned and this says so
             "endpoints_capped": len(endpoints) >= SCAN_ENDPOINT_CAP,
             "per_check": per_check, "estimated_minutes_at_rate_limit": minutes,
