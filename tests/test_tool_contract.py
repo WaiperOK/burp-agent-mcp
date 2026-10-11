@@ -86,6 +86,13 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(any(k in prop for k in ("type", "anyOf", "$ref", "enum", "allOf")),
                                     f"parameter {pname} has no type")
 
+    async def test_every_tool_that_sends_traffic_asks_the_operator(self):
+        # openWorldHint means the tool reaches a target: the harness must confirm each such call with the operator
+        open_world = {t.name for t in self.tools if t.annotations and t.annotations.openWorldHint}
+        self.assertTrue(open_world)
+        self.assertLessEqual(open_world, deepseek_agent.CONFIRM_TOOLS,
+                             f"traffic tools without confirmation: {sorted(open_world - deepseek_agent.CONFIRM_TOOLS)}")
+
     async def test_every_tool_declares_all_four_hints(self):
         for tool in self.tools:
             with self.subTest(tool=tool.name):
