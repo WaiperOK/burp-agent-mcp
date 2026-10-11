@@ -214,11 +214,11 @@ def _scope_regex(host: str | None = None) -> str:
 
 
 async def _scoped_items():
-    """History records for authorized hosts, oldest first among the newest max_history_records, filtered on the Burp
-    side. There are no history_id values, so tools that need an id for replay use the history index (HISTORY) instead.
+    """History records for authorized hosts, newest first, filtered on the Burp side. There are no history_id values,
+    so tools that need an id for replay use the history index (HISTORY) instead.
 
-    A long history is not read from its first record: the count of matches is found first, and reading starts at the
-    start of the newest window. Otherwise a scan would never see the traffic recorded after the first few hundred.
+    Only the newest max_history_records matches are read. Reading starts at the end, so the endpoint cap and the
+    choice of one record per endpoint favour recent traffic.
     """
     rx = _scope_regex()
 
@@ -226,14 +226,19 @@ async def _scoped_items():
         return httpmsg.parse_history(await _upstream(
             "get_proxy_http_history_regex", {"regex": rx, "count": count, "offset": offset}))
 
-    offset = max(0, await count_records(page) - POLICY.max_history_records)
+    total = await count_records(page)
+    low = max(0, total - POLICY.max_history_records)
+    end = total
     for _ in range(max(1, POLICY.max_history_records // HISTORY_PAGE) + 1):
-        items = await page(offset, HISTORY_PAGE)
+        if end <= low:
+            return
+        start = max(low, end - HISTORY_PAGE)
+        items = await page(start, end - start)
         if not items:
             return
-        for item in items:
+        for item in reversed(items):
             yield item
-        offset += len(items)
+        end = start
 
 
 async def _load_items(history_ids: list[int]) -> dict[int, dict]:
@@ -1245,7 +1250,7 @@ async def _collect_endpoints(source: str, openapi_name: str | None,
                 continue  # a method the scan does not use, or a damaged record
             if ep is None:  # outside the scope, under either scheme
                 continue
-            # one record per endpoint: the first one that got a 2xx answer, else the first one seen. A request
+            # one record per endpoint: the newest one that got a 2xx answer, else the newest one seen. A request
             # that failed (say, with a wrong id) would otherwise be probed in place of a working one.
             ok = (httpmsg.status_of(item.get("response", "") or "") or "").startswith("2")
             if ep.key not in seen or (ok and ep.key not in ok_keys):

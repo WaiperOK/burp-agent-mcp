@@ -506,9 +506,10 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
         status = await self._wait(out["job_id"])
         self.assertEqual(status["state"], "done", status)
         kinds = {(f["candidate"], f["url"].split("?")[0]) for f in status["findings"]}
-        self.assertIn(("auth_not_enforced_candidate", "https://ehealth.test.local/api/patients/101"), kinds)
+        # /api/patients/101 and /102 are one endpoint, /api/patients/{id}: the scan keeps the newest record (102)
+        self.assertIn(("auth_not_enforced_candidate", "https://ehealth.test.local/api/patients/102"), kinds)
         self.assertIn(("server_error_on_malformed_input", "https://ehealth.test.local/api/patients/%27"), kinds)
-        self.assertIn(("neighbor_object_exists", "https://ehealth.test.local/api/patients/102"), kinds)  # neighbouring id
+        self.assertIn(("neighbor_object_exists", "https://ehealth.test.local/api/patients/101"), kinds)  # neighbouring id
         self.assertTrue(any(k == "reflected_input_candidate" for k, _ in kinds))
         # only safe methods: not a single POST to the stand
         self.assertTrue(all(sent["content"].split(" ")[0] in ("GET", "HEAD", "OPTIONS") for sent in SENT))
@@ -1019,6 +1020,23 @@ class ScopedHistoryWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/patients/p25", paths)
         self.assertNotIn("/api/patients/p0", paths)  # older than the window: not read at all
 
+
+    async def test_records_come_newest_first_inside_the_window(self):
+        records = [self._record(i) for i in range(8)]
+
+        async def upstream(tool, arguments):
+            off, cnt = arguments["offset"], arguments["count"]
+            page = records[off:off + cnt]
+            return json.dumps(page) if page else "Reached end of items"
+
+        original, saved = server.POLICY, server._upstream
+        server.POLICY = dataclasses.replace(original, max_history_records=5)
+        server._upstream = upstream
+        try:
+            paths = [httpmsg.split_request(item["request"])[1] async for item in server._scoped_items()]
+        finally:
+            server.POLICY, server._upstream = original, saved
+        self.assertEqual(paths, [f"/api/patients/p{i}" for i in (7, 6, 5, 4, 3)])
 
     async def test_plan_says_when_the_endpoint_cap_cut_the_list(self):
         records = [self._record(i) for i in range(server.SCAN_ENDPOINT_CAP + 10)]
