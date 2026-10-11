@@ -1,5 +1,7 @@
 """Tests for the harness's model settings: which key, address and model it uses. Run: python tests/test_harness.py"""
 
+import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -27,6 +29,32 @@ class LlmSettingsTests(unittest.TestCase):
 
     def test_nothing_set_gives_no_key(self):
         self.assertEqual(load_llm_settings({})[0], "")
+
+
+class StartupTests(unittest.TestCase):
+    """The harness refuses to start without its settings, and says which one is missing. No model is called."""
+
+    HARNESS = Path(__file__).resolve().parent.parent / "deepseek_agent.py"
+
+    def _run(self, **env):
+        clean = {"PATH": os.environ.get("PATH", "")}  # no key, model or policy from the machine running the tests
+        return subprocess.run([sys.executable, str(self.HARNESS)], env={**clean, **env},
+                              capture_output=True, text=True, timeout=60)
+
+    def test_missing_key_is_reported(self):
+        out = self._run(BURP_AGENT_POLICY="/nonexistent.json")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("LLM_API_KEY is not set", out.stderr)
+
+    def test_other_address_without_a_model_is_reported(self):
+        out = self._run(LLM_API_KEY="k", LLM_BASE_URL="http://localhost:11434/v1", BURP_AGENT_POLICY="/nonexistent.json")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("LLM_MODEL is not set", out.stderr)
+
+    def test_missing_policy_is_reported(self):
+        out = self._run(LLM_API_KEY="k")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("BURP_AGENT_POLICY is not set", out.stderr)
 
 
 if __name__ == "__main__":
