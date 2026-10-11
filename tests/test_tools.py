@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -896,6 +897,97 @@ class BrowserCrawlToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reason is required", (await server.browser_crawl("https://ehealth.test.local/", " "))["error"])
         out = await server.browser_crawl("https://app.example.com/", reason="map the app")
         self.assertIn("not in authorized scope", out["error"])
+
+
+class BrowserReadToolTests(unittest.IsolatedAsyncioTestCase):
+    """Read-only browser tools, with the browser's own methods replaced: no browser starts and no traffic is sent."""
+
+    async def test_text_is_redacted_and_cut(self):
+        async def text():
+            return "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefgh12345 " + "a" * 9000
+
+        with mock.patch.object(server.BROWSER, "text", text):
+            out = await server.browser_text(max_chars=500)
+        self.assertNotIn("eyJhbGci", out["text"])
+        self.assertTrue(out["truncated"])
+
+    async def test_links_keep_only_authorized_hosts(self):
+        async def links():
+            return [{"text": "patients", "href": "https://ehealth.test.local/patients", "host": "ehealth.test.local"},
+                    {"text": "ads", "href": "https://evil.example/x", "host": "evil.example"}]
+
+        with mock.patch.object(server.BROWSER, "links", links):
+            out = await server.browser_links()
+        self.assertEqual([link["href"] for link in out["links"]], ["https://ehealth.test.local/patients"])
+
+    async def test_forms_show_field_names_not_values(self):
+        async def forms():
+            return [{"action_host": "ehealth.test.local", "method": "POST",
+                     "fields": [{"tag": "input", "type": "password", "name": "pw", "id": "pw", "sensitive": True,
+                                 "value": "hunter2"}]},
+                    {"action_host": "evil.example", "method": "POST",
+                     "fields": [{"tag": "input", "type": "text", "name": "q"}]}]
+
+        with mock.patch.object(server.BROWSER, "forms", forms):
+            out = await server.browser_forms()
+        self.assertEqual(len(out["forms"]), 1)
+        self.assertTrue(out["forms"][0]["fields"][0]["sensitive"])
+        self.assertNotIn("hunter2", json.dumps(out))
+
+    async def test_state_wait_and_screenshot_return_the_browser_answer(self):
+        async def state():
+            return {"url": "https://ehealth.test.local/", "title": "t", "host": "ehealth.test.local", "forms": 1}
+
+        async def wait_for(selector, timeout_ms):
+            return {"found": True, "selector": selector}
+
+        async def screenshot():
+            return {"path": f"{TMP}/shots/a.png"}
+
+        with mock.patch.object(server.BROWSER, "state", state), \
+                mock.patch.object(server.BROWSER, "wait_for", wait_for), \
+                mock.patch.object(server.BROWSER, "screenshot", screenshot):
+            self.assertEqual((await server.browser_state())["host"], "ehealth.test.local")
+            self.assertTrue((await server.browser_wait("#go"))["found"])
+            self.assertEqual((await server.browser_screenshot())["path"], f"{TMP}/shots/a.png")
+
+
+class BrowserActionRefusalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_click_press_back_and_reload_need_a_reason(self):
+        calls = [server.browser_click("#go", " "), server.browser_press("Enter", ""),
+                 server.browser_back(""), server.browser_reload("   ")]
+        for call in calls:
+            self.assertIn("reason is required", (await call)["error"])
+
+    async def test_click_press_back_and_reload_denied_in_read_only(self):
+        original = server.POLICY
+        server.POLICY = dataclasses.replace(original, mode="read_only")
+        try:
+            outs = [await server.browser_click("#go", "x"), await server.browser_press("Enter", "x"),
+                    await server.browser_back("x"), await server.browser_reload("x")]
+        finally:
+            server.POLICY = original
+        for out in outs:
+            self.assertIn("read_only", out["error"])
+
+
+class UniversalReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_the_two_report_files_are_read_and_secrets_are_masked(self):
+        out_dir = Path(TMP, "universal")
+        out_dir.mkdir(exist_ok=True)
+        (out_dir / "report_input.json").write_text('{"note": "password=hunter2", "ok": true}', encoding="utf-8")
+        original = server.POLICY
+        server.POLICY = dataclasses.replace(original, universal_output_dir=str(out_dir))
+        try:
+            refused = await server.read_universal_report("../secret.txt")
+            got = await server.read_universal_report("report_input.json")
+            missing = await server.read_universal_report("ai_security_report.md")
+        finally:
+            server.POLICY = original
+        self.assertEqual(refused["error"], "file not allowed")
+        self.assertIn("ok", got["content"])
+        self.assertNotIn("hunter2", json.dumps(got))
+        self.assertIn("not found", missing["error"])
 
 
 if __name__ == "__main__":
