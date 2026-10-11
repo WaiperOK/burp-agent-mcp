@@ -149,25 +149,30 @@ class BrowserGuardTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.browser.close()
 
-    async def _open_or_skip(self, url):
+    async def _or_skip(self, awaitable):
+        """Runs a browser call. If no browser can start here, the test is skipped with the reason, not failed."""
         try:
-            return await self.browser.open(url)
+            return await awaitable
         except BrowserError as ex:
             msg = str(ex).lower()
             if "playwright" in msg or "executable" in msg or "browser start" in msg:
-                self.skipTest(f"browser is not available: {ex}")
+                self.skipTest("no browser for these tests: run `playwright install chromium`, "
+                              "or set BURP_AGENT_TEST_BROWSER_CHANNEL=chrome")
             raise
+
+    async def _open_or_skip(self, url):
+        return await self._or_skip(self.browser.open(url))
 
     # ----- navigation and guard -----
 
     async def test_crawl_follows_same_host_links_and_skips_sign_out(self):
-        out = await self.browser.crawl(f"{self.base}/crawl", max_pages=10, max_depth=2)
+        out = await self._or_skip(self.browser.crawl(f"{self.base}/crawl", max_pages=10, max_depth=2))
         urls = [v["url"] for v in out["visited"]]
         self.assertEqual(urls, [f"{self.base}/crawl", f"{self.base}/next"])
         self.assertGreaterEqual(out["skipped_links"], 2)  # the sign-out link and the external link
 
     async def test_crawl_stops_at_the_page_limit(self):
-        out = await self.browser.crawl(f"{self.base}/crawl", max_pages=1, max_depth=2)
+        out = await self._or_skip(self.browser.crawl(f"{self.base}/crawl", max_pages=1, max_depth=2))
         self.assertEqual(len(out["visited"]), 1)
 
     async def test_open_in_scope(self):
