@@ -76,6 +76,8 @@ Every active action passes through the same layers. A layer that says no stops t
 
 `request_url` takes `dry_run=true` to preview the exact request without sending it or spending budget.
 
+Every tool declares MCP hints: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` (`openWorldHint=true` means the tool sends traffic to a target). Hosts can show them before a call.
+
 `browser_fill` refuses password fields and fields that look like secrets. Secrets are never typed by the agent; logging in is done by a person with the `login` command.
 
 ## Quick start
@@ -219,7 +221,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-287 tests across fourteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium (set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead). The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+300 tests across fifteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium (set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead). The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
@@ -236,7 +238,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 | `redact.py` | secret and personal-data redaction |
 | `audit.py` | hash-chained audit log and verifier |
 | `scope_cli.py` | owner tool for scope and environment |
-| `deepseek_agent.py` | reference harness with operator confirmation |
+| `deepseek_agent.py` | reference harness with operator confirmation; any OpenAI-compatible model (`LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`; DeepSeek by default) |
 | `burp-extension/` | Burp extension source and jar |
 | `tests/` | test suites |
 
