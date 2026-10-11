@@ -1,10 +1,14 @@
-"""Harness: DeepSeek (OpenAI-compatible API) as an agent on top of the MCP gateway server.py.
+"""Harness: a chat model with tool calling, on top of the MCP gateway server.py.
+
+Any OpenAI-compatible API works (DeepSeek, OpenAI, Ollama, LM Studio, OpenRouter, ...). DeepSeek is the default.
 
 The model sees only the gateway tools. Scope, mode and audit are checked by server.py,
 not by the model. In addition, this harness asks the operator to confirm active requests.
 
 Run:
-  export DEEPSEEK_API_KEY=...
+  export LLM_API_KEY=...          # DEEPSEEK_API_KEY also works
+  export LLM_BASE_URL=...         # optional, default https://api.deepseek.com
+  export LLM_MODEL=...            # required for any address except the default DeepSeek one
   BURP_AGENT_POLICY=./policy.json python deepseek_agent.py
 """
 
@@ -19,8 +23,7 @@ from mcp.client.stdio import get_default_environment, stdio_client
 from openai import AsyncOpenAI
 
 HERE = Path(__file__).resolve().parent
-MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_URL = "https://api.deepseek.com"
 MAX_STEPS = 30  # model call limit per task
 MAX_TOOL_CHARS = 30000
 
@@ -56,6 +59,18 @@ Passwords and plugins:
 """
 
 
+def load_llm_settings(env) -> tuple[str, str, str]:
+    """Key, base URL and model. LLM_* names come first; the older DEEPSEEK_* names still work.
+
+    The default model (deepseek-chat) is used only with the default DeepSeek address. Any other address must name its model.
+    """
+    api_key = env.get("LLM_API_KEY") or env.get("DEEPSEEK_API_KEY") or ""
+    base_url = env.get("LLM_BASE_URL") or env.get("DEEPSEEK_BASE_URL") or DEEPSEEK_URL
+    default_model = "deepseek-chat" if base_url.rstrip("/") == DEEPSEEK_URL else ""
+    model = env.get("LLM_MODEL") or env.get("DEEPSEEK_MODEL") or default_model
+    return api_key, base_url, model
+
+
 async def confirm(name: str, args: dict) -> bool:
     """Asks the operator in the terminal. The blocking input runs in a thread so the event loop is not stalled."""
     print(f"\n[!] The model wants to call {name}:\n{json.dumps(args, ensure_ascii=False, indent=2)[:1500]}")
@@ -78,9 +93,9 @@ async def run_tool(session: ClientSession, call) -> str:
     return text[:MAX_TOOL_CHARS]
 
 
-async def agent_turn(llm: AsyncOpenAI, session: ClientSession, tools: list, messages: list) -> None:
+async def agent_turn(llm: AsyncOpenAI, model: str, session: ClientSession, tools: list, messages: list) -> None:
     for _ in range(MAX_STEPS):
-        resp = await llm.chat.completions.create(model=MODEL, messages=messages, tools=tools)
+        resp = await llm.chat.completions.create(model=model, messages=messages, tools=tools)
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
 
@@ -96,21 +111,23 @@ async def agent_turn(llm: AsyncOpenAI, session: ClientSession, tools: list, mess
 
 
 async def main() -> None:
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    api_key, base_url, model = load_llm_settings(os.environ)
     if not api_key:
-        sys.exit("DEEPSEEK_API_KEY is not set")
+        sys.exit("LLM_API_KEY is not set (DEEPSEEK_API_KEY works too)")
+    if not model:
+        sys.exit("LLM_MODEL is not set: name the model for this LLM_BASE_URL")
 
     policy = os.environ.get("BURP_AGENT_POLICY")
     if not policy:
         sys.exit("BURP_AGENT_POLICY is not set (path to policy.json)")
 
-    # Pass the gateway only the policy, not the whole environment (it holds the DeepSeek key).
+    # Pass the gateway only the policy, not the whole environment (it holds the model API key).
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(HERE / "server.py")],
         env={**get_default_environment(), "BURP_AGENT_POLICY": policy},
     )
-    llm = AsyncOpenAI(api_key=api_key, base_url=BASE_URL)
+    llm = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -135,7 +152,7 @@ async def main() -> None:
                 if not task:
                     break
                 messages.append({"role": "user", "content": task})
-                await agent_turn(llm, session, tools, messages)
+                await agent_turn(llm, model, session, tools, messages)
 
 
 if __name__ == "__main__":
