@@ -3,6 +3,7 @@
 Run: python tests/test_scope.py
 """
 
+import dataclasses
 import json
 import sys
 import tempfile
@@ -90,6 +91,15 @@ class PolicyValidationTests(unittest.TestCase):
             self.assertEqual(policy(tmp, browser_channel="Chrome").browser_channel, "chrome")
             with self.assertRaises(PolicyError):
                 policy(tmp, browser_channel="firefox")
+
+
+class ExamplePolicyTests(unittest.TestCase):
+    def test_example_policy_lists_every_setting_and_loads(self):
+        example_path = Path(__file__).resolve().parent.parent / "policy.example.json"
+        example = json.loads(example_path.read_text(encoding="utf-8"))
+        settings = {f.name for f in dataclasses.fields(Policy)} - {"policy_sha256"}  # the hash is computed, not set
+        self.assertEqual(settings - set(example), set(), "settings missing from policy.example.json")
+        Policy.load(str(example_path))  # the example itself is a valid policy
 
 
 if __name__ == "__main__":

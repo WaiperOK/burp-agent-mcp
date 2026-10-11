@@ -23,6 +23,7 @@
   "universal_output_dir": "~/burp_universal_output",
   "upstream_sse_url": "http://127.0.0.1:9876/",
   "browser_proxy": "http://127.0.0.1:8080",
+  "browser_channel": null,
   "browser_profile_dir": "~/burp_agent_browser_profile",
   "max_response_chars": 20000
 }
