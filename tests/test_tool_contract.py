@@ -86,6 +86,16 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(any(k in prop for k in ("type", "anyOf", "$ref", "enum", "allOf")),
                                     f"parameter {pname} has no type")
 
+    async def test_every_tool_declares_all_four_hints(self):
+        for tool in self.tools:
+            with self.subTest(tool=tool.name):
+                ann = tool.annotations
+                self.assertIsNotNone(ann)
+                for hint in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"):
+                    self.assertIsInstance(getattr(ann, hint), bool, hint)
+                if ann.readOnlyHint:
+                    self.assertFalse(ann.destructiveHint, "a read-only tool cannot be destructive")
+
 
 if __name__ == "__main__":
     unittest.main()

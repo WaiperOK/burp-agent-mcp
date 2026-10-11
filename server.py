@@ -31,6 +31,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 import httpmsg
 import intruder as intruder_mod
@@ -303,7 +304,14 @@ def _json_keys(obj, depth: int = 3, prefix: str = "") -> set[str]:
 
 # ---------- Read-only ----------
 
-@mcp.tool()
+# MCP tool hints: a host shows them before a call. openWorldHint means the tool sends traffic to a target.
+READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+LOCAL_CHANGE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+LOCAL_REPLACE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+TARGET_REQUEST = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+TARGET_VISIT = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
+
+@mcp.tool(annotations=READ)
 async def scope_status() -> dict:
     """Mode, scope, allowed methods and paths, policy hash and Burp availability. Read-only."""
     t0 = time.perf_counter()
@@ -330,7 +338,7 @@ async def scope_status() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def search_proxy_history(host: str | None = None, path_contains: str | None = None, limit: int = 20,
                                fresh: bool = False) -> dict:
     """Searches Proxy history for authorized hosts only (read-only).
@@ -382,7 +390,7 @@ async def search_proxy_history(host: str | None = None, path_contains: str | Non
                       "complete": HISTORY.complete})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def list_endpoints(host: str | None = None, limit: int = 50, fresh: bool = False) -> dict:
     """Endpoint summary from Proxy history for authorized hosts (read-only).
 
@@ -430,7 +438,7 @@ async def list_endpoints(host: str | None = None, limit: int = 50, fresh: bool =
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def get_history_item(history_id: int) -> dict:
     """One Proxy history record by history_id (read-only). Request and response are sanitized and truncated.
 
@@ -459,7 +467,7 @@ async def get_history_item(history_id: int) -> dict:
                       "response_truncated_upstream": bool(item.get("response_truncated"))})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def search_bundles(pattern: str, max_matches: int = 30, context: int = 80) -> dict:
     """Regex search over the saved JavaScript bodies of authorized hosts (read-only).
 
@@ -524,7 +532,7 @@ async def search_bundles(pattern: str, max_matches: int = 30, context: int = 80)
     return _envelope({"matches": hits, "scanned_bodies": scanned})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def openapi_coverage(filename: str, show_uncovered: int = 30, fresh: bool = False) -> dict:
     """OpenAPI specification coverage from Proxy history (read-only).
 
@@ -591,7 +599,7 @@ async def openapi_coverage(filename: str, show_uncovered: int = 30, fresh: bool 
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def diff_responses(history_a: int, history_b: int) -> dict:
     """Compares two responses from Proxy history: status, length, Content-Type and JSON key paths (up to 3 levels).
 
@@ -630,7 +638,7 @@ async def diff_responses(history_a: int, history_b: int) -> dict:
     return _envelope({"a": a, "b": b, "diff": diff})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def scanner_issues(limit: int = 20, offset: int = 0) -> dict:
     """Burp scanner findings for authorized hosts (read-only). Fields are sanitized and truncated."""
     args = {"limit": limit, "offset": offset}
@@ -660,7 +668,7 @@ async def scanner_issues(limit: int = 20, offset: int = 0) -> dict:
     return _envelope({"issues": issues, "offset": offset, "truncated": cut})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def read_passive_findings(limit: int = 50) -> dict:
     """Passive findings from the Burp extension (AgentFindings) in policy.findings_file (read-only).
 
@@ -696,7 +704,7 @@ async def read_passive_findings(limit: int = 50) -> dict:
     return _envelope({"findings": rows})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def read_universal_report(name: Literal["ai_security_report.md", "report_input.json"]) -> dict:
     """Reads a report written by the burp-universal-automation extension (read-only, sanitized)."""
     args = {"name": name}
@@ -732,7 +740,7 @@ async def _browser_call(tool: str, args: dict, fn, *, active: bool = False) -> d
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def browser_state() -> dict:
     """Browser state: URL, title, host, number of forms, whether the WebSocket guard is on. No traffic."""
     return _envelope(await _browser_call("browser_state", {}, BROWSER.state))
@@ -742,7 +750,7 @@ async def _text_fn():
     return {"text": await BROWSER.text()}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def browser_text(max_chars: int = 8000) -> dict:
     """Text of the gateway browser page (no new traffic to the target). Sanitized and truncated."""
     args = {"max_chars": max_chars}
@@ -757,7 +765,7 @@ async def _links_fn():
     return {"links": await BROWSER.links()}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def browser_links(limit: int = 50) -> dict:
     """Links on the current page, authorized hosts only (no new traffic to the target)."""
     limit = max(1, min(int(limit), 200))
@@ -773,7 +781,7 @@ async def _forms_fn():
     return {"forms": await BROWSER.forms()}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def browser_forms() -> dict:
     """Forms on the current page: action, method, fields (name, type). Values are not returned. Secret fields are flagged."""
     out = await _browser_call("browser_forms", {}, _forms_fn)
@@ -785,7 +793,7 @@ async def browser_forms() -> dict:
                                             for fld in f["fields"]]} for f in forms]})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def browser_wait(selector: str, timeout_ms: int = 5000) -> dict:
     """Waits for an element to appear on the page (no traffic to the target, up to 15 seconds)."""
     args = {"selector": selector[:200], "timeout_ms": timeout_ms}
@@ -793,7 +801,7 @@ async def browser_wait(selector: str, timeout_ms: int = 5000) -> dict:
     return out if "error" in out else _envelope(out)
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_CHANGE)
 async def browser_screenshot() -> dict:
     """Screenshot of the current page into the screenshots directory (returns the path, not the image). Warning: it may contain personal data."""
     out = await _browser_call("browser_screenshot", {}, BROWSER.screenshot)
@@ -802,7 +810,7 @@ async def browser_screenshot() -> dict:
 
 # ---------- Repeater: a tab in Burp, no traffic to the target ----------
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_CHANGE)
 async def repeater_tab(history_id: int, reason: str, tab_name: str = "", path: str | None = None,
                        body: str | None = None, set_headers: dict[str, str] | None = None,
                        remove_headers: list[str] | None = None, port: int = 443, use_https: bool = True) -> dict:
@@ -845,7 +853,7 @@ async def repeater_tab(history_id: int, reason: str, tab_name: str = "", path: s
 
 # ---------- Active actions (mode=active) ----------
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def send_request(host: str, port: int, use_https: bool, raw_request: str, reason: str) -> dict:
     """ACTIVE: sends an HTTP/1.1 request through Burp.
 
@@ -885,7 +893,7 @@ async def send_request(host: str, port: int, use_https: bool, raw_request: str, 
     return _envelope(view)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def replay_variant(history_id: int, reason: str, path: str | None = None, body: str | None = None,
                          set_headers: dict[str, str] | None = None, remove_headers: list[str] | None = None,
                          port: int = 443, use_https: bool = True) -> dict:
@@ -945,7 +953,7 @@ def _read_payload_file(name: str) -> list[str]:
     return [l for l in lines if l][: intruder_mod.MAX_PAYLOADS]
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def intruder_run(history_id: int, position: str, reason: str, payloads: list[str] | None = None,
                        payload_file: str | None = None, max_requests: int = 20, min_delay_ms: int = 500,
                        port: int = 443, use_https: bool = True, baseline: bool = True) -> dict:
@@ -1017,7 +1025,7 @@ async def _browser_act(tool: str, args: dict, fn) -> dict:
     return out if "error" in out else _envelope(out)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_VISIT)
 async def browser_open(url: str, reason: str) -> dict:
     """Opens a URL in the gateway browser through the Burp proxy (TRAFFIC TO THE TARGET: mode=active only). reason is required.
 
@@ -1030,7 +1038,7 @@ async def browser_open(url: str, reason: str) -> dict:
     return await _browser_act("browser_open", args, lambda: BROWSER.open(url))
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def browser_click(selector: str, reason: str) -> dict:
     """Clicks an element on the current page (TRAFFIC TO THE TARGET: mode=active only). reason is required.
 
@@ -1043,7 +1051,7 @@ async def browser_click(selector: str, reason: str) -> dict:
     return await _browser_act("browser_click", args, lambda: BROWSER.click(selector))
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_CHANGE)
 async def browser_fill(selector: str, value: str, reason: str) -> dict:
     """Fills a form field (mode=active only, reason is required). Passwords and secret fields are refused.
 
@@ -1056,7 +1064,7 @@ async def browser_fill(selector: str, value: str, reason: str) -> dict:
     return await _browser_act("browser_fill", args, lambda: BROWSER.fill(selector, value))
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def browser_press(key: str, reason: str) -> dict:
     """Presses a key: Enter, Tab, Escape, ArrowDown, ArrowUp, Space (mode=active only, reason is required).
 
@@ -1069,7 +1077,7 @@ async def browser_press(key: str, reason: str) -> dict:
     return await _browser_act("browser_press", args, lambda: BROWSER.press(key))
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_VISIT)
 async def browser_back(reason: str) -> dict:
     """Back in the browser history (TRAFFIC TO THE TARGET: mode=active only, reason is required)."""
     args = {"reason": reason[:300]}
@@ -1079,7 +1087,7 @@ async def browser_back(reason: str) -> dict:
     return await _browser_act("browser_back", args, BROWSER.back)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_VISIT)
 async def browser_reload(reason: str) -> dict:
     """Reloads the current page (TRAFFIC TO THE TARGET: mode=active only, reason is required)."""
     args = {"reason": reason[:300]}
@@ -1091,7 +1099,7 @@ async def browser_reload(reason: str) -> dict:
 
 # ---------- Work by URL and the scanner ----------
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def request_url(url: str, reason: str, method: str = "GET", headers: dict[str, str] | None = None,
                       body: str | None = None, dry_run: bool = False) -> dict:
     """ACTIVE: sends a request to a full URL (TRAFFIC TO THE TARGET: mode=active only, environment test/stage).
@@ -1290,7 +1298,7 @@ def _plan_summary(endpoints, probes) -> dict:
             "sample_urls": sorted({e.origin + e.path.split("?", 1)[0] for e in endpoints})[:20]}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def scan_plan(source: str = "history", checks: str = "auth,ids,malformed,reflect",
                     max_requests: int = 150, openapi_name: str | None = None) -> dict:
     """Scan plan WITHOUT sending requests (read-only). Shows how many requests would be sent and where.
@@ -1384,7 +1392,7 @@ async def _scan_job(job_id: str, probes: list, min_delay_s: float, max_requests:
         _save_scan_jobs()
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_REQUEST)
 async def scan_start(reason: str, source: str = "history", checks: str = "auth,ids,malformed,reflect",
                      max_requests: int = 150, openapi_name: str | None = None) -> dict:
     """START a URL scan in the background (TRAFFIC TO THE TARGET: mode=active only, environment test/stage).
@@ -1428,7 +1436,7 @@ async def scan_start(reason: str, source: str = "history", checks: str = "auth,i
     return _envelope({"job_id": job_id, "plan": plan, "state": "running"})
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def scan_status(job_id: str) -> dict:
     """Scan job state: progress, candidates (findings) and the stop reason. Read-only."""
     job = SCAN_JOBS.get(job_id)
@@ -1453,7 +1461,7 @@ async def scan_status(job_id: str) -> dict:
     })
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_CHANGE)
 async def scan_stop(job_id: str) -> dict:
     """Asks the job to stop after the current request."""
     job = SCAN_JOBS.get(job_id)
@@ -1468,7 +1476,7 @@ MAX_CRAWL_PAGES = 50
 MAX_CRAWL_DEPTH = 3
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_VISIT)
 async def browser_crawl(start_url: str, reason: str, max_pages: int = 20, max_depth: int = 2) -> dict:
     """CRAWL in the browser from start_url: opens pages reachable by links on the same host (active, GET page loads).
 
@@ -1512,7 +1520,7 @@ LOGIN_URL_ENV = "BURP_AGENT_LOGIN_URL"  # the login page; a scan signs in again 
 LOCAL_HOST_RE = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\]|[a-z0-9-]+(\.[a-z0-9-]+)*\.(localhost|test))$")
 
 
-@mcp.tool()
+@mcp.tool(annotations=TARGET_VISIT)
 async def login_local(url: str, reason: str, email_selector: str = "#email", password_selector: str = "#password",
                       submit_selector: str = "#loginButton", response_path: str = "/rest/user/login") -> dict:
     """SIGN IN to a LOCAL test application with the test account from the gateway's environment.
@@ -1562,7 +1570,7 @@ def _plugins_root() -> Path:
     return Path(POLICY.findings_file).expanduser().parent / "plugins"
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_REPLACE)
 async def plugin_write(name: str, source: str, reason: str) -> dict:
     """WRITE a Burp extension's Java source (no traffic; nothing is loaded into Burp).
 
@@ -1588,7 +1596,7 @@ async def plugin_write(name: str, source: str, reason: str) -> dict:
     return _envelope(out)
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_CHANGE)
 async def plugin_compile(name: str, reason: str) -> dict:
     """COMPILE a plugin written with plugin_write into <name>.jar (no traffic; the plugin is not run).
 
@@ -1613,7 +1621,7 @@ async def plugin_compile(name: str, reason: str) -> dict:
     return _envelope(out)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ)
 async def plugin_list() -> dict:
     """Plugins written so far, read-only: source present, jar built, and whether the jar matches the current source."""
     items = plugins.list_plugins(_plugins_root())
