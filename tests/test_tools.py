@@ -990,5 +990,35 @@ class UniversalReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not found", missing["error"])
 
 
+class ScopedHistoryWindowTests(unittest.IsolatedAsyncioTestCase):
+    """A history longer than the cap: the scan reads the newest in-scope records, not the oldest ones."""
+
+    def _record(self, i):
+        return {"request": f"GET /api/patients/p{i} HTTP/1.1\r\nHost: ehealth.test.local\r\n\r\n",
+                "response": "HTTP/1.1 200 OK\r\n\r\n{}"}
+
+    async def test_scan_sees_the_newest_records_when_history_is_longer_than_the_cap(self):
+        records = [self._record(i) for i in range(30)]
+
+        async def upstream(tool, arguments):
+            if tool != "get_proxy_http_history_regex":
+                raise AssertionError(tool)
+            off, cnt = arguments["offset"], arguments["count"]
+            page = records[off:off + cnt]
+            return json.dumps(page) if page else "Reached end of items"
+
+        original, saved = server.POLICY, server._upstream
+        server.POLICY = dataclasses.replace(original, max_history_records=5)
+        server._upstream = upstream
+        try:
+            eps = await server._collect_endpoints("history", None, ("GET",))
+        finally:
+            server.POLICY, server._upstream = original, saved
+        paths = {e.path for e in eps}
+        self.assertIn("/api/patients/p29", paths)
+        self.assertIn("/api/patients/p25", paths)
+        self.assertNotIn("/api/patients/p0", paths)  # older than the window: not read at all
+
+
 if __name__ == "__main__":
     unittest.main()

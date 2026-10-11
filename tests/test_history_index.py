@@ -91,9 +91,9 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(index.entries[-1].path, "/api/item/24")
 
     async def test_locating_the_window_takes_few_reads(self):
-        from history_index import _count_records
+        from history_index import count_records
         burp = FakeHistory(record(i) for i in range(1000))
-        self.assertEqual(await _count_records(burp.fetch), 1000)
+        self.assertEqual(await count_records(burp.fetch), 1000)
         self.assertLessEqual(len(burp.calls), 25)  # about 2*log2(n), not a scan of every page
 
     async def test_history_replaced_by_a_shorter_one_starts_the_window_again(self):

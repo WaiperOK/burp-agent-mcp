@@ -39,7 +39,7 @@ import plugins
 import scanner
 from audit import AuditLog
 from browser_guard import BrowserError, GuardedBrowser
-from history_index import Entry, HistoryIndex, fingerprint
+from history_index import Entry, HistoryIndex, count_records, fingerprint
 from httpmsg import MsgError
 from policy import Gate, Policy, PolicyError, RateLimitError
 from redact import SENSITIVE_HEADERS, mask_query, redact_text, truncate
@@ -214,16 +214,21 @@ def _scope_regex(host: str | None = None) -> str:
 
 
 async def _scoped_items():
-    """History records for authorized hosts, filtered on the Burp side, without record numbers.
+    """History records for authorized hosts, oldest first among the newest max_history_records, filtered on the Burp
+    side. There are no history_id values, so tools that need an id for replay use the history index (HISTORY) instead.
 
-    One call instead of a full scan: the server-side filter returns only matches. There are no history_id values,
-    so tools that need an id for replay use the history index (HISTORY) instead.
+    A long history is not read from its first record: the count of matches is found first, and reading starts at the
+    start of the newest window. Otherwise a scan would never see the traffic recorded after the first few hundred.
     """
     rx = _scope_regex()
-    offset = 0
-    for _ in range(max(1, POLICY.max_history_records // HISTORY_PAGE)):
-        items = httpmsg.parse_history(await _upstream(
-            "get_proxy_http_history_regex", {"regex": rx, "count": HISTORY_PAGE, "offset": offset}))
+
+    async def page(offset: int, count: int) -> list[dict]:
+        return httpmsg.parse_history(await _upstream(
+            "get_proxy_http_history_regex", {"regex": rx, "count": count, "offset": offset}))
+
+    offset = max(0, await count_records(page) - POLICY.max_history_records)
+    for _ in range(max(1, POLICY.max_history_records // HISTORY_PAGE) + 1):
+        items = await page(offset, HISTORY_PAGE)
         if not items:
             return
         for item in items:

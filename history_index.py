@@ -63,7 +63,7 @@ def _entry(history_id: int, item: dict) -> Entry:
                  httpmsg.status_of(item.get("response") or ""), fingerprint(item))
 
 
-async def _count_records(fetch: PageFetch) -> int:
+async def count_records(fetch: PageFetch) -> int:
     """How many records Burp holds. Doubles a probe until it passes the end, then bisects: about 2*log2(n) reads of
     one record each, never a full scan."""
     async def has(n: int) -> bool:  # True if there are at least n records
@@ -129,7 +129,7 @@ class HistoryIndex:
             else:
                 self.reset()  # cleared, replaced or shorter: index again from the newest records
         if next_id is None:
-            next_id = max(0, await _count_records(fetch) - self.max_records)
+            next_id = max(0, await count_records(fetch) - self.max_records)
         while True:
             if time.monotonic() - started >= time_budget_s:  # >= so that a zero budget always stops
                 self._trim()
