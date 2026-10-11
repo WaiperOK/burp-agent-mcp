@@ -1020,5 +1020,23 @@ class ScopedHistoryWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/api/patients/p0", paths)  # older than the window: not read at all
 
 
+    async def test_plan_says_when_the_endpoint_cap_cut_the_list(self):
+        records = [self._record(i) for i in range(server.SCAN_ENDPOINT_CAP + 10)]
+
+        async def upstream(tool, arguments):
+            off, cnt = arguments["offset"], arguments["count"]
+            page = records[off:off + cnt]
+            return json.dumps(page) if page else "Reached end of items"
+
+        saved = server._upstream
+        server._upstream = upstream
+        try:
+            out = await server.scan_plan(source="history", checks="auth", max_requests=5)
+        finally:
+            server._upstream = saved
+        self.assertTrue(out["plan"]["endpoints_capped"])
+        self.assertEqual(out["plan"]["endpoints_found"], server.SCAN_ENDPOINT_CAP)
+
+
 if __name__ == "__main__":
     unittest.main()

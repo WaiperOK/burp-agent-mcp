@@ -221,7 +221,7 @@ These checks are a review aid, not a sandbox. Read the source before you load th
 ./run_tests.sh
 ```
 
-306 tests across sixteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. If none can start, they are skipped with the reason. Set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
+307 tests across sixteen suites. `test_burp_replies.py` holds replies in the shape they came back from a live target, as regression fixtures. `test_tool_contract.py` starts the gateway over stdio, as the harness does, and checks that the tools the model receives match this README and the confirmation list. They use a fake Burp upstream and local servers, so no external network is needed. Browser tests run a real Chromium. If none can start, they are skipped with the reason. Set `BURP_AGENT_TEST_BROWSER_CHANNEL=chrome` to run them on an installed Google Chrome instead. The upstream suite starts a real local MCP SSE server and checks reconnection after a restart.
 
 ## Project layout
 
